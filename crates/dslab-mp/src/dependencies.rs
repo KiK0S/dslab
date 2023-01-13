@@ -1,13 +1,13 @@
 use dslab_core::component::Id;
 use dslab_core::event::Event;
 use dslab_core::event::EventId;
+use rand::prelude::SliceRandom;
 use serde::Serialize;
 use std::cell::RefCell;
 use std::collections::HashMap;
 use std::fmt::Debug;
 use std::rc::Rc;
 use std::vec::Vec;
-use rand::prelude::SliceRandom;
 
 #[derive(Debug)]
 pub struct DependencyWrapper<T: Copy + PartialEq + Debug> {
