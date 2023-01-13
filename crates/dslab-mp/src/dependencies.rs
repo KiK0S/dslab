@@ -7,6 +7,7 @@ use std::collections::HashMap;
 use std::fmt::Debug;
 use std::rc::Rc;
 use std::vec::Vec;
+use rand::prelude::SliceRandom;
 
 #[derive(Debug)]
 pub struct DependencyWrapper<T: Copy + PartialEq + Debug> {
