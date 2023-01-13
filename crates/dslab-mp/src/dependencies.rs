@@ -31,7 +31,7 @@ impl TimerDependencyResolver {
         }
     }
     pub fn add(&mut self, node: Id, time: f64, event: Rc<RefCell<DependencyWrapper<EventId>>>) {
-        let timers = self.node_timers.entry(node).or_insert(Vec::new());
+        let timers = self.node_timers.entry(node).or_default();
         let mut max_time_before_idx = None;
         if let Some(first_timer) = timers.first() {
             if first_timer.0 > time {
