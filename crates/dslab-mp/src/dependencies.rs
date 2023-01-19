@@ -1,11 +1,11 @@
 use dslab_core::component::Id;
 use dslab_core::event::Event;
 use dslab_core::event::EventId;
+use itertools::Itertools;
 use rand::prelude::SliceRandom;
 use serde::Serialize;
 use std::cell::RefCell;
 use std::hash::Hash;
-use itertools::Itertools;
 
 use std::collections::HashMap;
 use std::fmt::Debug;
@@ -109,7 +109,7 @@ impl TimerDependencyResolver {
         let data = self.node_timers.get_mut(&node).unwrap();
         let event_pos = event_pos.unwrap();
         assert!(data[event_pos].0 == data[0].0);
-        
+
         let mut other_idx = None;
         for (idx, timer) in data.iter().enumerate() {
             if timer.0 <= data[event_pos].0 && idx != event_pos {
@@ -117,18 +117,12 @@ impl TimerDependencyResolver {
                 break;
             }
         }
-        
+
         if let Some(idx) = other_idx {
             // need to link over removed elem
             for child in childs {
-                data[idx].1
-                    .as_ref()
-                    .borrow_mut()
-                    .add_child(&child);
-                child
-                    .as_ref()
-                    .borrow_mut()
-                    .add_parent(&data[idx].1);
+                data[idx].1.as_ref().borrow_mut().add_child(&child);
+                child.as_ref().borrow_mut().add_parent(&data[idx].1);
             }
         }
         data.remove(event_pos);
@@ -211,7 +205,10 @@ impl<T: Copy + PartialEq + Debug + Hash + Eq> DependencyWrapper<T> {
     }
 
     pub fn pop_dependencies(&mut self) -> Vec<Rc<RefCell<DependencyWrapper<T>>>> {
-        self.dependencies_after.drain(..).unique_by(|elem| elem.as_ref().borrow().inner).collect()
+        self.dependencies_after
+            .drain(..)
+            .unique_by(|elem| elem.as_ref().borrow().inner)
+            .collect()
     }
 
     pub fn is_available(&self) -> bool {
