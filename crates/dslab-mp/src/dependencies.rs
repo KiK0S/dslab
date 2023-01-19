@@ -84,7 +84,7 @@ impl TimerDependencyResolver {
                 event.as_ref().borrow_mut().add_child(&timers[idx as usize].1);
                 timers[idx as usize].1.as_ref().borrow_mut().add_parent(&event);
             }
-            *timers = vec![(time, event.clone())]
+            *timers = vec![(time, event)]
                 .into_iter()
                 .chain(timers.as_slice().into_iter().cloned())
                 .collect();
