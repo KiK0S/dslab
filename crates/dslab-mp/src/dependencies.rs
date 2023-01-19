@@ -34,7 +34,10 @@ impl TimerDependencyResolver {
         }
     }
     pub fn add(&mut self, node: Id, time: f64, event: Rc<RefCell<DependencyWrapper<EventId>>>) {
-        assert!(self.event_to_node.insert(event.as_ref().borrow().inner, node).is_none(), "duplicate EventId not allowed");
+        assert!(
+            self.event_to_node.insert(event.as_ref().borrow().inner, node).is_none(),
+            "duplicate EventId not allowed"
+        );
         let timers = self.node_timers.entry(node).or_default();
         let mut max_time_before_idx = None;
         if let Some(first_timer) = timers.first() {
@@ -131,7 +134,8 @@ impl DependencyResolver {
             .available_events
             .iter()
             .enumerate()
-            .find(|x| x.1.as_ref().borrow().inner == event_id).unwrap();
+            .find(|x| x.1.as_ref().borrow().inner == event_id)
+            .unwrap();
         let next_events = event.1.as_ref().borrow_mut().pop_dependencies();
         for dependency in next_events.iter() {
             let idx = dependency
@@ -265,4 +269,3 @@ fn test_dependency_resolver_pop() {
         timers[node as usize] += 1;
     }
 }
-
