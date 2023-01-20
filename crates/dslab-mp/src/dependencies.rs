@@ -60,7 +60,11 @@ impl TimerDependencyResolver {
         if let Some(min_time_after_idx) = min_time_after_idx {
             for event_after in timers.iter() {
                 if event_after.0 == timers[min_time_after_idx].0 {
-                    println!("{} -> {}", event.as_ref().borrow().inner, event_after.1.as_ref().borrow().inner);
+                    println!(
+                        "{} -> {}",
+                        event.as_ref().borrow().inner,
+                        event_after.1.as_ref().borrow().inner
+                    );
                     event.as_ref().borrow_mut().add_child(&event_after.1);
                     event_after.1.as_ref().borrow_mut().add_parent(&event);
                 }
@@ -74,7 +78,11 @@ impl TimerDependencyResolver {
                 .chain(vec![(time, event.clone())].iter().cloned())
                 .chain(after.into_iter().cloned())
                 .collect();
-            println!("{} -> {}", timers[idx].1.as_ref().borrow().inner, event.as_ref().borrow().inner);
+            println!(
+                "{} -> {}",
+                timers[idx].1.as_ref().borrow().inner,
+                event.as_ref().borrow().inner
+            );
             timers[idx].1.as_ref().borrow_mut().add_child(&event);
             event.as_ref().borrow_mut().add_parent(&timers[idx].1);
         } else {
