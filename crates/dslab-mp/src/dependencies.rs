@@ -51,39 +51,33 @@ impl TimerDependencyResolver {
         let mut min_time_after_idx = None;
         for (idx, timer) in timers.iter().enumerate() {
             if timer.0 < time {
-                max_time_before_idx = Some(idx as i32);
+                max_time_before_idx = Some(idx);
             }
             if timer.0 > time && min_time_after_idx.is_none() {
-                min_time_after_idx = Some(idx as i32);
+                min_time_after_idx = Some(idx);
+            }
+        }
+        if let Some(min_time_after_idx) = min_time_after_idx {
+            for event_after in timers.iter() {
+                if event_after.0 == timers[min_time_after_idx].0 {
+                    println!("{} -> {}", event.as_ref().borrow().inner, event_after.1.as_ref().borrow().inner);
+                    event.as_ref().borrow_mut().add_child(&event_after.1);
+                    event_after.1.as_ref().borrow_mut().add_parent(&event);
+                }
             }
         }
         if let Some(idx) = max_time_before_idx {
-            let (before, after) = timers.split_at((idx + 1) as usize);
-            // theoretically, dependency before <-> after should be deleted, but it can be deleted later because it is always O(1) extra
+            let (before, after) = timers.split_at(idx + 1);
             *timers = before
                 .into_iter()
                 .cloned()
                 .chain(vec![(time, event.clone())].iter().cloned())
                 .chain(after.into_iter().cloned())
                 .collect();
-            timers[idx as usize].1.as_ref().borrow_mut().add_child(&event);
-            event.as_ref().borrow_mut().add_parent(&timers[idx as usize].1);
-            if let Some(idx_after) = min_time_after_idx {
-                event
-                    .as_ref()
-                    .borrow_mut()
-                    .add_child(&timers[(idx_after + 1) as usize].1);
-                timers[(idx_after + 1) as usize]
-                    .1
-                    .as_ref()
-                    .borrow_mut()
-                    .add_parent(&event);
-            }
+            println!("{} -> {}", timers[idx].1.as_ref().borrow().inner, event.as_ref().borrow().inner);
+            timers[idx].1.as_ref().borrow_mut().add_child(&event);
+            event.as_ref().borrow_mut().add_parent(&timers[idx].1);
         } else {
-            if let Some(idx) = min_time_after_idx {
-                event.as_ref().borrow_mut().add_child(&timers[idx as usize].1);
-                timers[idx as usize].1.as_ref().borrow_mut().add_parent(&event);
-            }
             *timers = vec![(time, event)]
                 .into_iter()
                 .chain(timers.as_slice().into_iter().cloned())
@@ -314,6 +308,7 @@ fn test_timer_dependency_resolver_same_time() {
         let mut times: Vec<u64> = (0..100).into_iter().collect();
         times.shuffle(&mut rand::thread_rng());
         for event_time in times {
+            println!("{}", event_time);
             let event = Event {
                 id: event_time,
                 src: node_id as u32,
@@ -325,6 +320,7 @@ fn test_timer_dependency_resolver_same_time() {
         }
     }
     while let Some(id) = resolver.available_events().choose(&mut rand::thread_rng()) {
+        println!("{:?}", resolver.available_events());
         let id = *id;
         println!("{}", id);
         sequence.push(id);
