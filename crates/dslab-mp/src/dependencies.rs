@@ -215,7 +215,6 @@ impl<T: Copy + PartialEq + Debug + Hash + Eq> DependencyWrapper<T> {
 #[derive(Serialize)]
 struct SamplePayload {}
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -229,7 +228,7 @@ mod tests {
         assert!(a <= b);
         assert!(a == b);
     }
-    
+
     #[test]
     fn test_dependency_resolver_simple() {
         let mut resolver = DependencyResolver::new();
@@ -263,7 +262,7 @@ mod tests {
             timers[node as usize] += 1;
         }
     }
-    
+
     #[test]
     fn test_dependency_resolver_pop() {
         let mut resolver = DependencyResolver::new();
@@ -282,7 +281,7 @@ mod tests {
                 resolver.add_event(&event);
             }
         }
-    
+
         // remove most of elements
         // timer resolver should clear its queues before it
         // can add next events without broken dependencies
@@ -316,7 +315,7 @@ mod tests {
             timers[node as usize] += 1;
         }
     }
-    
+
     #[test]
     fn test_timer_dependency_resolver_same_time() {
         let mut resolver = DependencyResolver::new();
@@ -351,5 +350,4 @@ mod tests {
             timers[node as usize] = time;
         }
     }
-    
 }
