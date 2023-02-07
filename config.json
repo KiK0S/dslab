@@ -1,0 +1,6 @@
+{
+    "output_dir": "artifacts",
+    "args": ["basic.py", "retry.py", "retry_ordered.py"],
+    "timeout": 100,
+    "command": ["./test_single.sh"]
+}
