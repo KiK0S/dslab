@@ -41,7 +41,7 @@ impl TimerDependencyResolver {
         let mut new_unavailable = Vec::new();
         let mut is_now_available = false;
         let min_time_after = timers.range(FloatOrd(time)..).next();
-        if let Some(next_events) = min_time_after.and_then(|x| Some(x.1)) {
+        if let Some(next_events) = min_time_after.map(|x| x.1) {
             // next_events might become unavailable
             new_unavailable = next_events.clone();
         }
