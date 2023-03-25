@@ -80,7 +80,7 @@ fn test_dependency_resolver_pop() {
 
     // add one more timer to each process
     // if new timer delay is 3 or more it should be blocked by all other remaining timers if any
-    // if new timer delay is less than 3 then it could "overtake" some of initial timers
+    // if new timer delay is less than 3, say 2.1, then it could "overtake" some of initial timers
     // (this may sound counter-intuitive since initial timers were set "at one moment" in this test,
     // however currently dependency resolver is implemented for general case when timers can be set
     // at different moments, while the optimization for timers set at one moment is not implemented)
