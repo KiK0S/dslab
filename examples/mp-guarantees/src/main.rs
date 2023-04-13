@@ -350,7 +350,110 @@ fn test_model_checking(config: &TestConfig) -> TestResult {
         &sys,
         Box::new(Dfs::new(
             Box::new(|state| {
-                if state.search_depth > 4 {
+                if state.search_depth > 6 {
+                    Some("too deep".to_owned())
+                } else {
+                    None
+                }
+            }),
+            Box::new(|state| {
+                let delivered = state.node_states["receiver-node"]["receiver"].local_outbox.len();
+                if delivered == 2 {
+                    return Some("done".to_owned());
+                }
+                return None;
+            }),
+            Box::new(move |state| {
+                let mut msg_count = HashMap::new();
+                let mut expected_msg_count = HashMap::new();
+                for msg in &messages {
+                    msg_count.insert(msg.data.clone(), 0);
+                    *expected_msg_count.entry(&msg.data).or_insert(0) += 1;
+                }
+                let delivered = &state.node_states["receiver-node"]["receiver"].local_outbox;
+                // check that delivered messages have expected type and data
+                for msg in delivered.iter() {
+                    // assuming all messages have the same type
+                    if msg.tip != messages[0].tip {
+                        return Err(format!("Wrong message type {}", msg.tip));
+                    }
+                    if !msg_count.contains_key(&msg.data) {
+                        return Err(format!("Wrong message data: {}", msg.data));
+                    }
+                    *msg_count.get_mut(&msg.data).unwrap() += 1;
+                }
+                // check delivered message count according to expected guarantees
+                for (data, count) in msg_count {
+                    let expected_count = expected_msg_count[&data];
+                    if config.reliable && count < expected_count && state.events.available_events_num() == 0 {
+                        println!("{:?}", state);
+                        return Err(format!(
+                            "Message {} is not delivered (observed count {} < expected count {})",
+                            data, count, expected_count
+                        ));
+                    }
+                    if config.once && count > expected_count {
+                        return Err(format!(
+                            "Message {} is delivered more than once (observed count {} > expected count {})",
+                            data, count, expected_count
+                        ));
+                    }
+                }
+                // check message delivery order
+                if config.ordered {
+                    let mut next_idx = 0;
+                    for i in 0..delivered.len() {
+                        let msg = &delivered[i];
+                        let mut matched = false;
+                        while !matched && next_idx < messages.len() {
+                            if msg.data == messages[next_idx].data {
+                                matched = true;
+                            } else {
+                                next_idx += 1;
+                            }
+                        }
+                        if !matched {
+                            return Err(format!(
+                                "Order violation: {} after {}",
+                                msg.data,
+                                &delivered[i - 1].data
+                            ));
+                        }
+                    }
+                }
+                Ok(())
+            }),
+            dslab_mp::mc::strategy::ExecutionMode::Experiment,
+        )),
+    );
+    let res = mc.run();
+    assume!(
+        res.is_ok(),
+        format!("model checher found error: {}", res.as_ref().err().unwrap())
+    )?;
+    println!("{:?}", res.unwrap());
+    Ok(true)
+}
+
+
+fn test_model_checking_unreliable(config: &TestConfig) -> TestResult {
+    let mut sys = build_system(config, false);
+    sys.network().set_drop_rate(0.1);
+    let message_count = 2;
+    let texts = generate_message_texts(&mut sys, message_count);
+    let mut messages = Vec::new();
+    for text in texts {
+        let msg = Message::new("MESSAGE", &format!(r#"{{"text": "{}"}}"#, text));
+        sys.send_local_message("sender", msg.clone());
+        messages.push(msg);
+    }
+    let messages = messages;
+    let config = *config;
+    let mut mc = ModelChecker::new(
+        &sys,
+        Box::new(Dfs::new(
+            Box::new(|state| {
+                if state.search_depth > 5 {
                     Some("too deep".to_owned())
                 } else {
                     None
@@ -544,6 +647,7 @@ fn main() {
             tests.add("[AT MOST ONCE] CHAOS MONKEY", test_chaos_monkey, config);
         }
         tests.add("[AT MOST ONCE] MODEL CHECKING", test_model_checking, config);
+        tests.add("[AT MOST ONCE] MODEL CHECKING UNRELIABLE", test_model_checking_unreliable, config);
         if args.overhead {
             config.reliable = true;
             tests.add(
@@ -573,6 +677,7 @@ fn main() {
         tests.add("[AT LEAST ONCE] DELAYED+DUPLICATED", test_delayed_duplicated, config);
         tests.add("[AT LEAST ONCE] DROPPED", test_dropped, config);
         tests.add("[AT LEAST ONCE] MODEL CHECKING", test_model_checking, config);
+        tests.add("[AT LEAST ONCE] MODEL CHECKING UNRELIABLE", test_model_checking_unreliable, config);
         if args.monkeys > 0 {
             tests.add("[AT LEAST ONCE] CHAOS MONKEY", test_chaos_monkey, config);
         }
@@ -603,6 +708,7 @@ fn main() {
         tests.add("[EXACTLY ONCE] DELAYED+DUPLICATED", test_delayed_duplicated, config);
         tests.add("[EXACTLY ONCE] DROPPED", test_dropped, config);
         tests.add("[EXACTLY ONCE] MODEL CHECKING", test_model_checking, config);
+        tests.add("[EXACTLY ONCE] MODEL CHECKING UNRELIABLE", test_model_checking_unreliable, config);
         if args.monkeys > 0 {
             tests.add("[EXACTLY ONCE] CHAOS MONKEY", test_chaos_monkey, config);
         }
@@ -642,6 +748,7 @@ fn main() {
         );
         tests.add("[EXACTLY ONCE ORDERED] DROPPED", test_dropped, config);
         tests.add("[EXACTLY ONCE ORDERED] MODEL CHECKING", test_model_checking, config);
+        tests.add("[EXACTLY ONCE ORDERED] MODEL CHECKING UNRELIABLE", test_model_checking_unreliable, config);
         if args.monkeys > 0 {
             tests.add("[EXACTLY ONCE ORDERED] CHAOS MONKEY", test_chaos_monkey, config);
         }
