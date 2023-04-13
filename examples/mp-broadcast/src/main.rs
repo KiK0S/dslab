@@ -1,8 +1,16 @@
+use std::cmp::min;
+use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::env;
+use std::hash::{Hasher, Hash};
 use std::io::Write;
 
 use clap::Parser;
+use dslab_mp::mc::events::McEvent;
+use dslab_mp::mc::model_checker::ModelChecker;
+use dslab_mp::mc::strategy::{McSummary, VisitedStates, McResult};
+use dslab_mp::mc::system::McState;
+use dslab_mp::mc::strategies::dfs::Dfs;
 use env_logger::Builder;
 use log::LevelFilter;
 use rand::prelude::*;
@@ -56,7 +64,8 @@ fn check(sys: &mut System, config: &TestConfig) -> TestResult {
     let mut all_sent = HashSet::new();
     let mut all_delivered = HashSet::new();
     let mut histories = HashMap::new();
-    for proc in sys.process_names() {
+    for proc in 0..config.proc_count {
+        let proc = format!("proc-{}", proc);
         let mut history = Vec::new();
         let mut sent_msgs = Vec::new();
         let mut delivered_msgs = Vec::new();
@@ -83,7 +92,6 @@ fn check(sys: &mut System, config: &TestConfig) -> TestResult {
         delivered.insert(proc.clone(), delivered_msgs);
         histories.insert(proc, history);
     }
-
     if config.debug {
         println!("Messages sent across network: {}", sys.network().message_count());
         println!("Process histories:");
@@ -296,6 +304,244 @@ fn test_causal_order(config: &TestConfig) -> TestResult {
     check(&mut sys, config)
 }
 
+fn mc_check_too_deep(state: &McState, depth: u64) -> Result<(), String> {
+    if state.search_depth > depth {
+        Err("too deep".to_owned())
+    } else {
+        Ok(())
+    }
+}
+
+
+fn mc_prune_proc_permutations(state: &McState) -> Option<String> {
+    let mut proc_names = vec![];
+    for event in &state.log {
+        if let McEvent::MessageReceived { src, .. } = event {
+            if proc_names.iter().find(|x| **x == src).is_none() {
+                proc_names.push(src);
+            }
+        }
+        if let McEvent::MessageDropped { src, .. } = event {
+            if proc_names.iter().find(|x| **x == src).is_none() {
+                proc_names.push(src);
+            }
+        }
+    }
+    if proc_names.len() <= 1 {
+        return None;
+    }
+    for i in 0..(proc_names.len() - 1) {
+        if proc_names[i] > proc_names[i + 1] {
+            return Some("state is a permutation of other state".to_owned());
+        }
+    }
+    None
+}
+
+fn mc_prune_messages(state: &McState, for_a_proc: usize, total: usize) -> Option<String> {
+    let mut counter: HashMap<String, usize> = HashMap::new();
+    for event in &state.log {
+        if let McEvent::MessageReceived { src, .. } = event {
+            *counter.entry(src.clone()).or_insert(0) += 1;
+        }
+        if let McEvent::MessageDropped { src, .. } = event {
+            *counter.entry(src.clone()).or_insert(0) += 1;
+        }
+    }
+    for (proc, cnt) in counter {
+        if cnt > for_a_proc {
+            return Some(format!("too many messages for proc {}", proc).to_owned());
+        }
+    }
+
+    if state.log.iter().filter(|event| 
+        match *event {
+            McEvent::MessageReceived { .. } => true,
+            McEvent::MessageDropped { .. } => true,
+            _ => false
+        }
+    ).count() > total {
+        return Some("too many messages in total".to_owned());
+    }
+    None
+}
+
+fn mc_invariant(state: &McState, config: &TestConfig, sent_messages: &HashSet<String>) -> Result<(), String> {
+    for i in 0..config.proc_count {
+        let outbox = &state.node_states[&format!("node-{}", i)][&format!("proc-{}", i)].local_outbox;
+        let mut unique = HashSet::new();
+        for message in outbox {
+            let data: Value = serde_json::from_str(&message.data).unwrap();
+            let message = data["text"].as_str().unwrap().to_string();
+
+            if unique.contains(&message) {
+                return Err("No duplication violated".to_owned());
+            }
+            unique.insert(message.clone());
+            if !sent_messages.contains(&message) {
+                return Err("No creation violated".to_owned());
+            }
+        }
+    }
+    Ok(())
+}
+
+fn mc_goal(state: &McState, config: &TestConfig, can_be_crashed: Option<u64>) -> Option<String> {
+    let mut received_total = 1;
+    for i in 0..config.proc_count {
+        let outbox = &state.node_states.get(&format!("node-{}", i)).and_then(|node| node.get(&format!("proc-{}", i)).and_then(|proc| Some(&proc.local_outbox)));
+        if let Some(outbox) = outbox {
+            if let Some(id_crashed) = can_be_crashed {
+                if i == id_crashed {
+                    continue;
+                }
+            }
+            received_total = min(received_total, outbox.len());
+        } else {
+            // ingore because node can be disconnected and that's ok
+        }
+    }
+    if received_total == 1 {
+        Some("done".to_owned())
+    } else {
+        None
+    }
+}
+
+fn mc_clear_state_history(state: &mut McState) {
+    state.log.clear();
+    for (node, node_state) in state.node_states.iter_mut() {
+        node_state.get_mut(node).map(|y| y.sent_message_count = 0);
+        node_state.get_mut(node).map(|y| y.received_message_count = 0);
+        node_state.get_mut(node).map(|y| y.local_outbox.clear());
+    }
+}
+
+fn get_n_start_states(start_states: HashSet<McState>, mut n: usize) -> HashSet<McState> {
+    n = min(n, start_states.len());
+    let mut hashed = start_states.into_iter().map(|state| {
+        let mut hasher = DefaultHasher::default();
+        state.hash(&mut hasher);
+        (hasher.finish(), state)
+    }).collect::<Vec<(u64, McState)>>();
+    hashed.sort_by_key(|(a, b)| *a);
+    HashSet::from_iter(hashed.split_at(n).0.into_iter().map(|(a, b)| b.clone()))
+}
+
+fn test_model_checking_normal_delivery(config: &TestConfig) -> TestResult {
+    let mut sys = build_system(config);
+    let msg_text = "0:Hello".to_owned();
+    let msg = Message::new("SEND", &format!(r#"{{"text": "{}"}}"#, msg_text));
+    sys.send_local_message("proc-0", msg.clone());
+    let config = *config;
+    let test_sent_messages: HashSet<String> = HashSet::from_iter(vec![msg_text].into_iter());
+    let mut mc = ModelChecker::new(
+        &sys,
+        Box::new(Dfs::new(
+            Box::new(|state| {
+                mc_prune_messages(state, 2, 6).or_else(||
+                mc_prune_proc_permutations(state).or_else(||
+                mc_check_too_deep(state, 10).err()))
+            }),
+            Box::new(move |state| {
+                mc_goal(state, &config, None)
+            }),
+            Box::new(move |state| {
+                mc_invariant(state, &config, &test_sent_messages)
+            }),
+            None,
+            dslab_mp::mc::strategy::ExecutionMode::Debug,
+        )),
+    );
+    let res = mc.run();
+    if res.is_err() {
+        return Err(format!("model checher found error: {}", res.as_ref().err().unwrap()));
+    }
+    let res = res.unwrap();
+    println!("{:?}", res.summary);
+    if !res.summary.states.contains_key("done") {
+        return Err("cant get answers".to_owned());
+    }
+    Ok(true)
+}
+
+fn test_model_checking_sender_crash(config: &TestConfig) -> TestResult {
+    let mut sys = build_system(config);
+    let msg_text = "0:Hello".to_owned();
+    let msg = Message::new("SEND", &format!(r#"{{"text": "{}"}}"#, msg_text));
+    sys.send_local_message("proc-0", msg.clone());
+    let config = *config;
+    let test_sent_messages: HashSet<String> = HashSet::from_iter(vec![msg_text].into_iter());
+    let mut mc = ModelChecker::new(
+        &sys,
+        Box::new(Dfs::new(
+            Box::new(|state| {
+                mc_check_too_deep(state, 4).err()
+            }),
+            Box::new(move |state| {
+                mc_goal(state, &config, None)
+            }),
+            Box::new(|state| {
+                mc_invariant(state, &config, &test_sent_messages)
+            }),
+            Some(Box::new(move |state| {
+                for i in 1..3 {
+                    let process_state = &state.node_states[&format!("node-{}", i)][&format!("proc-{}", i)];
+                    if process_state.received_message_count > 0 {
+                        return true;
+                    }
+                }
+                false
+            })),
+            dslab_mp::mc::strategy::ExecutionMode::Debug,
+        )),
+    );
+    let res = mc.run();
+    if res.is_err() {
+        return Err(format!("model checher found error: {}", res.as_ref().err().unwrap()));
+    }
+    let res = res.unwrap();
+    sys.network().disconnect_node("node-0");
+    let mut mc = ModelChecker::new(
+        &sys,
+        Box::new(Dfs::new(
+            Box::new(|state| {
+                mc_prune_messages(state, 4, 8).or_else(||
+                mc_prune_proc_permutations(state).or_else(||
+                mc_check_too_deep(state, 6).err()))
+            }),
+            Box::new(move |state| {
+                mc_goal(state, &config, Some(0))
+            }),
+            Box::new(|state| {
+                mc_invariant(state, &config, &test_sent_messages)
+            }),
+            None,
+            dslab_mp::mc::strategy::ExecutionMode::Debug,
+        ))
+    );
+    if res.collected.is_empty() {
+        return Err(format!("can't move to second stage"));
+    }
+    let collected = get_n_start_states(res.collected, 100);
+    let mut res = McResult::default();
+    for mut state in collected {
+        mc_clear_state_history(&mut state);
+        // Model Checking
+        let cur_res = mc.run();
+        mc.set_state(state);
+        if cur_res.is_err() {
+            return Err(format!("model checher found error: {}", cur_res.as_ref().err().unwrap()));
+        }
+        res.combine(cur_res.unwrap());
+    }
+    println!("{:?}", res.summary);
+    if !res.summary.states.contains_key("done") {
+        return Err("cant get answers".to_owned());
+    }
+    Ok(true)
+}
+
 fn test_chaos_monkey(config: &TestConfig) -> TestResult {
     let mut rand = Pcg64::seed_from_u64(config.seed);
     for i in 1..=config.monkeys {
@@ -426,8 +672,17 @@ fn main() {
     tests.add("TWO CRASHES", test_two_crashes, config);
     tests.add("TWO CRASHES 2", test_two_crashes2, config);
     tests.add("CAUSAL ORDER", test_causal_order, config);
+    let config_mc = TestConfig {
+        proc_factory: &proc_factory,
+        proc_count: 3,
+        seed: args.seed,
+        monkeys: args.monkeys,
+        debug: args.debug,
+    };
     tests.add("CHAOS MONKEY", test_chaos_monkey, config);
     tests.add("SCALABILITY", test_scalability, config);
+    tests.add("MODEL CHECKING NORMAL DELIVERY", test_model_checking_normal_delivery, config_mc);
+    tests.add("MODEL CHECKING SENDER CRASH", test_model_checking_sender_crash, config_mc);
 
     if args.test.is_none() {
         tests.run();
