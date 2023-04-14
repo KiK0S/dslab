@@ -5,6 +5,11 @@ use std::io::Write;
 use assertables::{assume, assume_eq};
 use clap::Parser;
 use decorum::R64;
+use dslab_mp::mc::model_checker::ModelChecker;
+use dslab_mp::mc::strategies::dfs::Dfs;
+use dslab_mp::mc::strategy::McResult;
+use dslab_mp::mc::system::McState;
+use dslab_mp::mc::events::McEvent;
 use env_logger::Builder;
 use log::LevelFilter;
 use rand::distributions::WeightedIndex;
@@ -688,6 +693,286 @@ fn test_distribution_node_removed(config: &TestConfig) -> TestResult {
     check(&mut sys, &procs, &kv, false, true)
 }
 
+
+fn mc_prune_none<'a>() -> Box<dyn Fn(&McState) -> Option<String> + 'a> {
+    Box::new(|_| None)
+}
+
+fn mc_invariant_depth<'a>(max_depth: u64) -> Box<dyn Fn(&McState) -> Result<(), String> + 'a> {
+    Box::new(move |state| {
+        if state.search_depth > max_depth {
+            Err("should have finished, too deep".to_owned())
+        } else {
+            Ok(())
+        }
+    })
+}
+
+fn mc_goal_query_finished<'a>(node: &'a str, proc: &'a str, start_len: usize) -> Box<dyn Fn(&McState) -> Option<String> + 'a> {
+    Box::new(move |state| {
+        let messages = &state.node_states[node][proc].local_outbox;
+        if messages.len() == start_len {
+            return None;
+        }
+        if state.events.available_events_num() != 0 {
+            return None;
+        }
+        Some("request finished".to_owned())
+    })
+}
+
+fn mc_collect_query_finished<'a>(node: &'a str, proc: &'a str, start_len: usize) -> Box<dyn Fn(&McState) -> bool + 'a> {
+    Box::new(move |state| {
+        let messages = &state.node_states[node][proc].local_outbox;
+        messages.len() > start_len
+    })
+}
+
+fn mc_clear_state_history(state: &mut McState) {
+    state.log.clear();
+    for (node, node_state) in state.node_states.iter_mut() {
+        node_state.get_mut(node).map(|y| y.sent_message_count = 0);
+        node_state.get_mut(node).map(|y| y.received_message_count = 0);
+        node_state.get_mut(node).map(|y| y.local_outbox.clear());
+    }
+}
+
+fn mc_check_query<'a>(sys: &'a mut System, node: &'a str, proc: &'a str, invariant: Box<dyn Fn(usize) -> Box<dyn Fn(&McState) -> Result<(), String> + 'a> + 'a>, msg: Message, start_states: Option<HashSet<McState>>) -> Result<McResult, String> {
+    if let Some(start_states) = start_states {
+        let mut combined_result = McResult::default();
+        for mut start_state in start_states {
+            mc_clear_state_history(&mut start_state);
+            let start_len = start_state.node_states[node][proc].local_outbox.len();
+            let mut mc = ModelChecker::new(
+                &sys,
+                Box::new(Dfs::new(
+                    mc_prune_none(),
+                    mc_goal_query_finished(node, proc, start_len),
+                    invariant(start_len),
+                    Some(mc_collect_query_finished(node, proc, start_len)),
+                    dslab_mp::mc::strategy::ExecutionMode::Debug,
+                )),
+            );
+            mc.set_state(start_state);
+            mc.apply_event(McEvent::LocalMessageReceived{ msg: msg.clone(), dest: proc.to_string() });
+            let res = mc.run();
+            if res.is_err() {
+                return Err(format!("model checher found error: {}", res.as_ref().err().unwrap()));
+            }
+            combined_result.combine(res.unwrap());
+        }
+        println!("{:?}", combined_result.summary);
+        Ok(combined_result)
+    } else {
+        let start_len = 0;
+        let mut mc = ModelChecker::new(
+            &sys,
+            Box::new(Dfs::new(
+                mc_prune_none(),
+                mc_goal_query_finished(node, proc, start_len),
+                invariant(start_len),
+                Some(mc_collect_query_finished(node, proc, start_len)),
+                dslab_mp::mc::strategy::ExecutionMode::Debug,
+            )),
+        );
+        mc.apply_event(McEvent::LocalMessageReceived{ msg, dest: proc.to_string() });
+        let res = mc.run();
+        if res.is_err() {
+            return Err(format!("model checher found error: {}", res.as_ref().err().unwrap()));
+        }
+        let res = res.unwrap();
+        println!("{:?}", &res.summary);
+        Ok(res)
+    }
+
+}
+
+
+fn check_mc_get<'a>(sys: &'a mut System, node: &'a str, proc: &'a str, key: &'a str, expected: Option<&'a str>, max_steps: u64, start_states: Option<HashSet<McState>>) -> Result<McResult, String> {
+    println!("check_mc_get {} {}", proc, key);
+    let msg = Message::new("GET", &format!(r#"{{"key": "{}"}}"#, key));
+    let invariant = Box::new(move |start_len: usize| -> Box<dyn Fn(&McState) -> Result<(), String> + 'a> {
+        Box::new(move |state: &McState| {
+            if state.search_depth > max_steps {
+                return Err("should have finished, too deep".to_owned());
+            }
+            let messages = &state.node_states[node][proc].local_outbox;
+            if let Some(message) = messages.get(start_len) {
+                if message.tip != "GET_RESP" {
+                    return Err(format!("wrong type {}", message.tip));
+                }
+                let data: GetRespMessage = serde_json::from_str(&message.data).map_err(|err| err.to_string())?;
+                if data.key != key {
+                    return Err(format!("wrong key {}", data.key));
+                }
+                if data.value != expected {
+                    return Err(format!("wrong value {:?}", data.value));
+                }
+            }
+            Ok(())
+        })
+    });
+    mc_check_query(sys, node, proc, invariant, msg, start_states) 
+}
+
+fn check_mc_put<'a>(sys: &'a mut System, node: &'a str, proc: &'a str, key: &'a str, value: &'a str, max_steps: u64, start_states: Option<HashSet<McState>>) -> Result<McResult, String> {
+    println!("check_mc_put {} {}", proc, key);
+    let msg = Message::new("PUT", &format!(r#"{{"key": "{}", "value": "{}"}}"#, key, value));
+    let invariant = Box::new(move |start_len: usize| -> Box<dyn Fn(&McState) -> Result<(), String> + 'a> {
+        Box::new(move |state: &McState| {
+            if state.search_depth > max_steps as u64 {
+                return Err("should have finished, too deep".to_owned());
+            }
+            let messages = &state.node_states[node][proc].local_outbox;
+            if let Some(message) = messages.get(start_len) {
+                if message.tip != "PUT_RESP" {
+                    return Err(format!("wrong type {}", message.tip));
+                }
+                let data: PutRespMessage = serde_json::from_str(&message.data).map_err(|err| err.to_string())?;
+                if data.key != key {
+                    return Err(format!("wrong key {}", data.key));
+                }
+                if data.value != value {
+                    return Err(format!("wrong value {:?}", data.value));
+                }
+            }
+            Ok(())
+        })
+    });
+    mc_check_query(sys, node, proc, invariant, msg, start_states) 
+}
+
+fn check_mc_delete<'a>(sys: &'a mut System, node: &'a str, proc: &'a str, key: &'a str, expected: Option<&'a str>, max_steps: u64, start_states: Option<HashSet<McState>>) -> Result<McResult, String> {
+    println!("check_mc_delete");
+    let msg = Message::new("DELETE", &format!(r#"{{"key": "{}"}}"#, key));
+    let invariant = Box::new(move |start_len: usize| -> Box<dyn Fn(&McState) -> Result<(), String> + 'a> {
+        Box::new(move |state| {
+            if state.search_depth > max_steps as u64 {
+                return Err("should have finished, too deep".to_owned());
+            }
+            let messages = &state.node_states[node][proc].local_outbox;
+            if let Some(message) = messages.get(start_len) {
+                if message.tip != "DELETE_RESP" {
+                    return Err(format!("wrong type {}", message.tip));
+                }
+                let data: DeleteRespMessage = serde_json::from_str(&message.data).map_err(|err| err.to_string())?;
+                if data.key != key {
+                    return Err(format!("wrong key {}", data.key));
+                }
+                if data.value != expected {
+                    return Err(format!("wrong value {:?}", data.value));
+                }
+            }
+            Ok(())
+        })
+    });
+    mc_check_query(sys, node, proc, invariant, msg, start_states) 
+}
+
+fn check_mc_node_removed(sys: &mut System, removed_proc: &str, max_steps: u64, start_states: HashSet<McState>) -> Result<McResult, String> {
+    let removed_node = &sys.proc_node_name(removed_proc);
+    let mut combined_result = McResult::default();
+    let alive_processes = sys.nodes().iter().filter(|name| *name != removed_node).map(|node| sys.get_node(node).unwrap().process_names()[0].clone()).collect::<Vec<String>>();
+    let everyone_finished = |state: &McState| {
+        for (_, node_states) in &state.node_states {
+            for (proc, proc_states) in node_states {
+                if !&alive_processes.contains(&proc) {
+                    continue;
+                }
+                if proc_states.local_outbox.is_empty() {
+                    return false;
+                }
+            }
+        }
+        return true;
+    };
+    for start_state in start_states {
+        let mut mc = ModelChecker::new(
+            &sys,
+            Box::new(Dfs::new(
+          mc_prune_none(),
+                Box::new(|state| {
+                    if !everyone_finished(state) {
+                        return None;
+                    }
+                    if state.events.available_events_num() != 0 {
+                        return None;
+                    }
+                    Some("request finished".to_owned())
+                }),
+                mc_invariant_depth(max_steps),
+                Some(Box::new(everyone_finished)),
+                dslab_mp::mc::strategy::ExecutionMode::Debug,
+            )),
+        );
+        mc.set_state(start_state);
+        
+        let msg = Message::new("NODE_REMOVED", &format!(r#"{{"id": "{}"}}"#, removed_proc));
+        for proc in sys.process_names() {
+            mc.apply_event(McEvent::LocalMessageReceived { msg: msg.clone(), dest: proc });
+        }
+        let res = mc.run();
+        if res.is_err() {
+            return Err(format!("model checher found error: {}", res.as_ref().err().unwrap()));
+        }
+        combined_result.combine(res.unwrap());
+    }
+    sys.network().disconnect_node(&removed_node);
+    println!("{:?}", combined_result.summary);
+    Ok(combined_result)
+}
+
+fn test_model_checking_normal(config: &TestConfig) -> TestResult {
+    let mut sys = build_system(config, false);
+    let mut rand = Pcg64::seed_from_u64(config.seed);
+
+    let node = "node-0";
+    let proc = "proc-0";
+    let key = random_string(8, &mut rand).to_uppercase();
+    let value = random_string(8, &mut rand);
+    let max_steps = 10;
+
+    let achieved_states = check_mc_get(&mut sys, node, proc, &key, None, max_steps, None)?;
+    let achieved_states = check_mc_put(&mut sys, node, proc, &key, &value, max_steps, Some(achieved_states.collected))?;
+    let achieved_states = check_mc_get(&mut sys, node, proc, &key, Some(&value), max_steps, Some(achieved_states.collected))?;
+    let achieved_states = check_mc_delete(&mut sys, node, proc, &key, Some(&value), max_steps, Some(achieved_states.collected))?;
+    let achieved_states = check_mc_get(&mut sys, node, proc, &key, None, max_steps, Some(achieved_states.collected))?;
+    check_mc_delete(&mut sys, node, proc, &key, None, max_steps, Some(achieved_states.collected))?;
+    Ok(true)
+}
+
+fn test_model_checking_node_removed(config: &TestConfig) -> TestResult {
+    let mut sys = build_system(config, false);
+    let mut rand = Pcg64::seed_from_u64(config.seed);
+
+    // insert random key-value pairs
+    let keys_count = 40;
+    let mut states = None;
+    let mut kv = HashMap::new();
+    for _ in 0..keys_count {
+        let k = random_string(8, &mut rand).to_uppercase();
+        let v = random_string(8, &mut rand);
+        let proc = sys.process_names().choose(&mut rand).unwrap().clone();
+        let node = sys.proc_node_name(&proc);
+        let res = check_mc_put(&mut sys, &node, &proc, &k, &v, 10, states.clone())?;
+        assert!(states.clone().is_none() || states.clone().unwrap() != res.collected);
+        states = Some(res.collected);
+        println!("{:?} {:?}", &states.clone().unwrap().len(), res.summary);
+        kv.insert(k, v);
+    }
+
+    // remove a node from the system
+    let removed = sys.process_names().choose(&mut rand).unwrap().clone();
+    states = Some(check_mc_node_removed(&mut sys, &removed, 10, states.unwrap())?.collected);
+    let alive_proc = sys.process_names().into_iter().filter(|proc| *proc != removed).collect::<Vec<String>>();
+    for (k, v) in kv {
+        let proc = alive_proc.choose(&mut rand).unwrap().clone();
+        let node = sys.proc_node_name(&proc);
+        states = Some(check_mc_get(&mut sys, &node, &proc, &k, Some(&v), 4, states)?.collected);
+    }
+    Ok(true)
+}
+
 // CLI -----------------------------------------------------------------------------------------------------------------
 
 /// Sharded KV Store Homework Tests
@@ -741,6 +1026,8 @@ fn main() {
     tests.add("NODE ADDED", test_node_added, config);
     tests.add("NODE REMOVED", test_node_removed, config);
     tests.add("NODE REMOVED AFTER CRASH", test_node_removed_after_crash, config);
+    tests.add("MODEL CHECKING", test_model_checking_normal, TestConfig { process_factory: &process_factory, proc_count: 3, seed: args.seed });
+    tests.add("MODEL CHECKING NODE REMOVED", test_model_checking_node_removed, TestConfig { process_factory: &process_factory, proc_count: 3, seed: args.seed });
     tests.add("MIGRATION", test_migration, config);
     tests.add("SCALE UP DOWN", test_scale_up_down, config);
     tests.add("DISTRIBUTION", test_distribution, config);
