@@ -423,7 +423,7 @@ fn test_model_checking(config: &TestConfig) -> TestResult {
                 }
                 Ok(())
             }),
-            dslab_mp::mc::strategy::ExecutionMode::Experiment,
+            dslab_mp::mc::strategy::ExecutionMode::Debug,
         )),
     );
     let res = mc.run();
@@ -526,7 +526,7 @@ fn test_model_checking_unreliable(config: &TestConfig) -> TestResult {
                 }
                 Ok(())
             }),
-            dslab_mp::mc::strategy::ExecutionMode::Experiment,
+            dslab_mp::mc::strategy::ExecutionMode::Debug,
         )),
     );
     let res = mc.run();
