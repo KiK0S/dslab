@@ -1,4 +1,4 @@
-from dslabmp import Context, Message, Process, StateMember
+from dslabmp import Context, Message, Process
 import uuid
 
 # AT MOST ONCE ---------------------------------------------------------------------------------------------------------
@@ -6,7 +6,7 @@ import uuid
 class AtMostOnceSender(Process):
     def __init__(self, node_id: str, receiver_id: str):
         self._id = node_id
-        self._receiver = StateMember(receiver_id)
+        self._receiver = receiver_id
 
     def on_local_message(self, msg: Message, ctx: Context):
         msg['uuid'] = uuid.uuid4().hex
@@ -26,7 +26,7 @@ class AtMostOnceSender(Process):
 class AtMostOnceReceiver(Process):
     def __init__(self, node_id: str):
         self._id = node_id
-        self.received_messages = StateMember([])
+        self.received_messages = []
 
     def on_local_message(self, msg: Message, ctx: Context):
         # not used in this task
@@ -48,8 +48,8 @@ class AtMostOnceReceiver(Process):
 class AtLeastOnceSender(Process):
     def __init__(self, node_id: str, receiver_id: str):
         self._id = node_id
-        self._receiver = StateMember(receiver_id)
-        self.messages = StateMember({})
+        self._receiver = receiver_id
+        self.messages = {}
 
     def on_local_message(self, msg: Message, ctx: Context):
         msg['uuid'] = uuid.uuid4().hex
@@ -93,8 +93,8 @@ class AtLeastOnceReceiver(Process):
 class ExactlyOnceSender(Process):
     def __init__(self, node_id: str, receiver_id: str):
         self._id = node_id
-        self._receiver = StateMember(receiver_id)
-        self.messages = StateMember({})
+        self._receiver = receiver_id
+        self.messages = {}
 
     def on_local_message(self, msg: Message, ctx: Context):
         msg['uuid'] = uuid.uuid4().hex
@@ -118,7 +118,7 @@ class ExactlyOnceSender(Process):
 class ExactlyOnceReceiver(Process):
     def __init__(self, node_id: str):
         self._id = node_id
-        self.received_messages = StateMember([])
+        self.received_messages = []
 
     def on_local_message(self, msg: Message, ctx: Context):
         # not used in this task
@@ -141,8 +141,8 @@ class ExactlyOnceReceiver(Process):
 class ExactlyOnceOrderedSender(Process):
     def __init__(self, node_id: str, receiver_id: str):
         self._id = node_id
-        self._receiver = StateMember(receiver_id)
-        self.queue = StateMember([])
+        self._receiver = receiver_id
+        self.queue = []
 
     def on_local_message(self, msg: Message, ctx: Context):
         msg['uuid'] = uuid.uuid4().hex
@@ -166,7 +166,7 @@ class ExactlyOnceOrderedSender(Process):
 class ExactlyOnceOrderedReceiver(Process):
     def __init__(self, node_id: str):
         self._id = node_id
-        self.received_messages = StateMember([])
+        self.received_messages = []
 
     def on_local_message(self, msg: Message, ctx: Context):
         # not used in this task
