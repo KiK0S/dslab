@@ -35,7 +35,7 @@ class AtMostOnceReceiver(Process):
     def on_message(self, msg: Message, sender: str, ctx: Context):
         if not msg['uuid'] in self.received_messages:
             self.received_messages.append(msg['uuid'])
-            msg.data.pop('uuid')
+            msg._data.pop('uuid')
             ctx.send_local(msg)
 
     def on_timer(self, timer_name: str, ctx: Context):
@@ -80,7 +80,7 @@ class AtLeastOnceReceiver(Process):
 
     def on_message(self, msg: Message, sender: str, ctx: Context):
         ctx.send(msg, sender)
-        msg.data.pop('uuid')
+        msg._data.pop('uuid')
         ctx.send_local(msg)
 
     def on_timer(self, timer_name: str, ctx: Context):
@@ -128,7 +128,7 @@ class ExactlyOnceReceiver(Process):
         ctx.send(msg, sender)
         if not msg['uuid'] in self.received_messages:
             self.received_messages.append(msg['uuid'])
-            msg.data.pop('uuid')
+            msg._data.pop('uuid')
             ctx.send_local(msg)
             
     def on_timer(self, timer_name: str, ctx: Context):
@@ -176,7 +176,7 @@ class ExactlyOnceOrderedReceiver(Process):
         ctx.send(msg, sender)
         if not msg['uuid'] in self.received_messages:
             self.received_messages.append(msg['uuid'])
-            msg.data.pop('uuid')
+            msg._data.pop('uuid')
             ctx.send_local(msg)
 
     def on_timer(self, timer_name: str, ctx: Context):

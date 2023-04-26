@@ -4,6 +4,7 @@ use std::io::Write;
 
 use assertables::{assume, assume_eq};
 use clap::Parser;
+use dslab_mp::mc::events::McEvent;
 use dslab_mp::mc::model_checker::ModelChecker;
 use dslab_mp::mc::strategies::dfs::Dfs;
 use env_logger::Builder;
@@ -350,8 +351,10 @@ fn test_model_checking_reliable_network(config: &TestConfig) -> TestResult {
         &sys,
         Box::new(Dfs::new(
             Box::new(|state| {
-                if state.search_depth > 6 {
-                    Some("too deep".to_owned())
+                if state.node_states["sender-node"]["sender"].sent_message_count > 4 {
+                    Some("too many messages sent".to_owned())
+                } else if state.node_states["receiver-node"]["receiver"].sent_message_count > 4 {
+                    Some("too many messages sent".to_owned())
                 } else {
                     None
                 }
@@ -364,6 +367,9 @@ fn test_model_checking_reliable_network(config: &TestConfig) -> TestResult {
                 return None;
             }),
             Box::new(move |state| {
+                if state.search_depth > 20 {
+                    return Err("too deep".to_owned());
+                }
                 let mut msg_count = HashMap::new();
                 let mut expected_msg_count = HashMap::new();
                 for msg in &messages {
@@ -423,6 +429,7 @@ fn test_model_checking_reliable_network(config: &TestConfig) -> TestResult {
                 }
                 Ok(())
             }),
+            None,
             dslab_mp::mc::strategy::ExecutionMode::Debug,
         )),
     );
@@ -526,6 +533,7 @@ fn test_model_checking_unreliable_network(config: &TestConfig) -> TestResult {
                 }
                 Ok(())
             }),
+            None,
             dslab_mp::mc::strategy::ExecutionMode::Debug,
         )),
     );
@@ -555,12 +563,20 @@ fn test_model_checking_limit_drop_number(config: &TestConfig) -> TestResult {
         &sys,
         Box::new(Dfs::new(
             Box::new(|state| {
-                let sent = state.node_states["sender-node"]["sender"].sent_message_count;
-                let received = state.node_states["receiver-node"]["receiver"].received_message_count;
-                if sent - received > 3 {
-                    Some("too many pending messages".to_owned())
-                } else if state.search_depth > 15  {
-                    Some("too deep".to_owned())
+                let num_drops_allowed: u64 = 3;
+                let drops = state.log.iter().filter(|event| 
+                    if let McEvent::MessageDropped{..} = **event {
+                        true
+                    } else {
+                        false
+                    }
+                ).count();
+                if drops > num_drops_allowed as usize {
+                    Some("too many dropped messages".to_owned())
+                } else if state.node_states["client-node"]["client"].sent_message_count > num_drops_allowed + 2 {
+                    Some("too many messages sent".to_owned())
+                } else if state.node_states["server-node"]["server"].sent_message_count > num_drops_allowed + 2 {
+                    Some("too many messages sent".to_owned())
                 } else {
                     None
                 }
@@ -632,6 +648,7 @@ fn test_model_checking_limit_drop_number(config: &TestConfig) -> TestResult {
                 }
                 Ok(())
             }),
+            None,
             dslab_mp::mc::strategy::ExecutionMode::Debug,
         )),
     );
