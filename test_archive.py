@@ -70,7 +70,7 @@ for arg in config['args']:
     with open(stdout_file, 'r') as f:
         cur_test = None
         for line in f.readlines():
-            m = re.match(r'--- ([\d\w _-]+) ---', line)
+            m = re.match(r'--- (.+[^-]) ---', line)
             if m:
                 cur_test = str(m.group(1))
             m = re.match(r'((PASSED)|(FAILED))', line)

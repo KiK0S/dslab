@@ -573,9 +573,9 @@ fn test_model_checking_limit_drop_number(config: &TestConfig) -> TestResult {
                 ).count();
                 if drops > num_drops_allowed as usize {
                     Some("too many dropped messages".to_owned())
-                } else if state.node_states["client-node"]["client"].sent_message_count > num_drops_allowed + 2 {
+                } else if state.node_states["receiver-node"]["receiver"].sent_message_count > num_drops_allowed + 2 {
                     Some("too many messages sent".to_owned())
-                } else if state.node_states["server-node"]["server"].sent_message_count > num_drops_allowed + 2 {
+                } else if state.node_states["sender-node"]["sender"].sent_message_count > num_drops_allowed + 2 {
                     Some("too many messages sent".to_owned())
                 } else {
                     None
