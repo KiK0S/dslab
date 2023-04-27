@@ -8,7 +8,7 @@ use crate::mc::events::{McEvent, McEventId};
 #[derive(Default, Clone, Hash, Eq, PartialEq, Debug)]
 pub struct PendingEvents {
     events: BTreeMap<McEventId, McEvent>,
-    timer_mapping: BTreeMap<(String, String), usize>,
+    timer_mapping: BTreeMap<(String, String), McEventId>,
     available_events: BTreeSet<McEventId>,
     directives: BTreeSet<McEventId>,
     resolver: DependencyResolver,
@@ -142,8 +142,9 @@ impl PendingEvents {
         let result = self.events.remove(&event_id).unwrap();
         self.directives.remove(&event_id);
         self.available_events.remove(&event_id);
-        if let McEvent::TimerFired { .. } = result {
+        if let McEvent::TimerFired { proc, timer, .. } = result.clone() {
             let unblocked_events = self.resolver.remove_timer(event_id);
+            self.timer_mapping.remove(&(proc, timer));
             self.available_events.extend(unblocked_events);
         }
         if let McEvent::MessageReceived { msg, src, dest, .. } = result.clone() {

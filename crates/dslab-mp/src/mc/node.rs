@@ -84,7 +84,7 @@ impl McNode {
         ));
         proc_entry.received_message_count += 1;
 
-        let mut proc_ctx = Context::new(proc.to_string(), None, depth as f64);
+        let mut proc_ctx = Context::new(proc.to_string(), None, depth as f64 / 10.0);
         proc_entry.proc_impl.on_message(msg, from, &mut proc_ctx);
         self.handle_process_actions(proc, 0.0, proc_ctx.actions())
     }
@@ -93,14 +93,14 @@ impl McNode {
         let proc_entry = self.processes.get_mut(&proc).unwrap();
         proc_entry.pending_timers.remove(&timer);
 
-        let mut proc_ctx = Context::new(proc.to_string(), None, depth as f64);
+        let mut proc_ctx = Context::new(proc.to_string(), None, depth as f64 / 10.0);
         proc_entry.proc_impl.on_timer(timer, &mut proc_ctx);
         self.handle_process_actions(proc, 0.0, proc_ctx.actions())
     }
 
     pub fn on_local_message_received(&mut self, proc: String, msg: Message, depth: u64) -> Vec<McEvent> {
         let proc_entry = self.processes.get_mut(&proc).unwrap();
-        let mut proc_ctx = Context::new(proc.to_string(), None, depth as f64);
+        let mut proc_ctx = Context::new(proc.to_string(), None, depth as f64 / 10.0);
         proc_entry.proc_impl.on_local_message(msg, &mut proc_ctx);
         self.handle_process_actions(proc, 0.0, proc_ctx.actions())
     }

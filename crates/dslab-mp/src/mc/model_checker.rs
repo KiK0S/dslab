@@ -78,6 +78,12 @@ impl<'a> ModelChecker<'a> {
         self.system.set_state(state);
     }
 
+    pub fn set_state_same_depth(&mut self, mut state: McState) {
+        state.events.is_insta = self.system.events.is_insta;
+        self.system.set_state(state);
+    }
+
+
     pub fn apply_event(&mut self, event: McEvent) {
         self.system.apply_event(event);
     }
