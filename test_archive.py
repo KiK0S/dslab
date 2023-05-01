@@ -3,6 +3,7 @@ import json
 import os
 import time
 import re
+import signal
 
 # Load config from JSON file
 with open('config.json', 'r') as f:
@@ -15,10 +16,11 @@ if not os.path.exists(config['output_dir']):
 # Initialize summary
 summary = {
     'total': 0,
-    'success': 0,
+    'success': [],
     'wrong': [],
     'non_zero_exit': [],
     'timed_out': [],
+    'reports': {},
     'test_results': {}
 }
 
@@ -32,7 +34,7 @@ for arg in config['args']:
     stderr_file = os.path.join(config['output_dir'], arg + '_stderr.log')
     print(cmd)
     with open(stdout_file, 'w') as stdout, open(stderr_file, 'w') as stderr:
-        p = subprocess.Popen(cmd, stdout=stdout, stderr=stderr)
+        p = subprocess.Popen(cmd, stdout=stdout, stderr=stderr, preexec_fn=os.setsid)
 
     # Wait for process to finish or time out
     start_time = time.time()
@@ -42,7 +44,7 @@ for arg in config['args']:
             break
         elif time.time() - start_time > config['timeout']:
             # Process has timed out
-            p.kill()
+            os.killpg(os.getpgid(p.pid), signal.SIGTERM) 
             summary['timed_out'].append(arg)
             break
         else:
@@ -50,7 +52,7 @@ for arg in config['args']:
 
     # Check exit code
     if p.returncode == 0:
-        summary['success'] += 1
+        summary['success'].append(arg)
     elif p.returncode == 1:
         summary['wrong'].append(arg)
     else:
@@ -66,6 +68,7 @@ for arg in config['args']:
         f.write(f"Stderr: {stderr_file}\n")
 
     # Get summary for tests:
+    summary['reports'][arg] = {}
 
     with open(stdout_file, 'r') as f:
         cur_test = None
@@ -81,6 +84,7 @@ for arg in config['args']:
                 sols.append(arg)
                 results[status] = sols
                 summary['test_results'][cur_test] = results
+                summary['reports'][arg][cur_test] = status
                 cur_test = None
         if cur_test is not None:
             status = 'RUNTIME_ERROR'
@@ -89,6 +93,8 @@ for arg in config['args']:
             sols.append(arg)
             results[status] = sols
             summary['test_results'][cur_test] = results
+            summary['reports'][arg][cur_test] = status
+
     # Increment total count
     summary['total'] += 1
 
@@ -96,9 +102,9 @@ for arg in config['args']:
 summary_file = os.path.join(config['output_dir'], 'summary.txt')
 with open(summary_file, 'w') as f:
     f.write(f"Total runs: {summary['total']}\n")
-    f.write(f"Successful runs: {summary['success']}\n")
-    f.write(f"Wrong runs: {summary['wrong']}\n")
-    f.write(f"Failed runs (non-zero exit code): {summary['non_zero_exit']}\n")
-    f.write(f"Failed runs (timed out): {summary['timed_out']}\n")
-    f.write(f"\n\n{json.dumps(summary['test_results'], indent=4, sort_keys=True)}\n")
+    f.write(f"Successful runs ({len(summary['success'])}): {summary['success']}\n")
+    f.write(f"Wrong runs ({len(summary['wrong'])}): {summary['wrong']}\n")
+    f.write(f"Failed runs (non-zero exit code) ({len(summary['non_zero_exit'])}): {summary['non_zero_exit']}\n")
+    f.write(f"Failed runs (timed out) ({len(summary['timed_out'])}): {summary['timed_out']}\n")
+    f.write(f"\n\n{json.dumps(summary, indent=4, sort_keys=True)}\n")
 
