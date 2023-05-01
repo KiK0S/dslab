@@ -7,6 +7,7 @@ use clap::Parser;
 use dslab_mp::mc::events::McEvent;
 use dslab_mp::mc::model_checker::ModelChecker;
 use dslab_mp::mc::strategies::dfs::Dfs;
+use dslab_mp::mc::system::McState;
 use env_logger::Builder;
 use log::LevelFilter;
 use rand::prelude::*;
@@ -335,6 +336,110 @@ fn test_chaos_monkey(config: &TestConfig) -> TestResult {
     Ok(true)
 }
 
+fn mc_goal<'a>() -> Box<dyn Fn(&McState) -> Option<String> + 'a> {
+    Box::new(|state| {
+        if state.node_states["receiver-node"]["receiver"].local_outbox.len() == 2 {
+            Some("got two messages".to_owned())
+        } else {
+            None
+        }
+    })
+} 
+
+fn mc_check_received_messages(state: &McState, messages_expected: &Vec<Message>, config: &TestConfig) -> Result<(), String> {
+    let mut msg_count = HashMap::new();
+    let mut expected_msg_count = HashMap::new();
+    for msg in messages_expected {
+        msg_count.insert(msg.data.clone(), 0);
+        *expected_msg_count.entry(&msg.data).or_insert(0) += 1;
+    }
+    let delivered = &state.node_states["receiver-node"]["receiver"].local_outbox;
+    // check that delivered messages have expected type and data
+    for msg in delivered.iter() {
+        // assuming all messages have the same type
+        if msg.tip != messages_expected.iter().next().unwrap().tip {
+            return Err(format!("Wrong message type {}", msg.tip));
+        }
+        if !msg_count.contains_key(&msg.data) {
+            return Err(format!("Wrong message data: {}", msg.data));
+        }
+        *msg_count.get_mut(&msg.data).unwrap() += 1;
+    }
+    // check delivered message count according to expected guarantees
+    for (data, count) in msg_count {
+        let expected_count = expected_msg_count[&data];
+        if config.reliable && count < expected_count && state.events.available_events_num() == 0 {
+            println!("{:?}", state);
+            return Err(format!(
+                "Message {} is not delivered (observed count {} < expected count {})",
+                data, count, expected_count
+            ));
+        }
+        if config.once && count > expected_count {
+            return Err(format!(
+                "Message {} is delivered more than once (observed count {} > expected count {})",
+                data, count, expected_count
+            ));
+        }
+    }
+    // check message delivery order
+    if config.ordered {
+        let mut next_idx = 0;
+        for i in 0..delivered.len() {
+            let msg = &delivered[i];
+            let mut matched = false;
+            while !matched && next_idx < messages_expected.len() {
+                if msg.data == messages_expected[next_idx].data {
+                    matched = true;
+                } else {
+                    next_idx += 1;
+                }
+            }
+            if !matched {
+                return Err(format!(
+                    "Order violation: {} after {}",
+                    msg.data,
+                    &delivered[i - 1].data
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn mc_check_too_deep(state: &McState, depth: u64) -> Result<(), String> {
+    if state.search_depth > depth {
+        Err("too deep".to_owned())
+    } else {
+        Ok(())
+    }
+}
+
+fn mc_prune_number_of_drops(state: &McState, drops_allowed: u64) -> Option<String> {
+    let drops = state.log.iter().filter(|event| 
+        if let McEvent::MessageDropped{..} = **event {
+            true
+        } else {
+            false
+        }
+    ).count();
+    if drops > drops_allowed as usize {
+        Some("too many dropped messages".to_owned())
+    } else {
+        None
+    }
+}
+
+fn mc_prune_many_messages_sent(state: &McState, allowed: u64) -> Option<String> {
+    if state.node_states["sender-node"]["sender"].sent_message_count > allowed {
+        Some("too many messages sent from sender".to_owned())
+    } else if state.node_states["receiver-node"]["receiver"].sent_message_count > allowed {
+        Some("too many messages sent from receiver".to_owned())
+    } else {
+        None
+    }
+}
+
 fn test_model_checking_reliable_network(config: &TestConfig) -> TestResult {
     let mut sys = build_system(config, false);
     let message_count = 2;
@@ -351,83 +456,12 @@ fn test_model_checking_reliable_network(config: &TestConfig) -> TestResult {
         &sys,
         Box::new(Dfs::new(
             Box::new(|state| {
-                if state.node_states["sender-node"]["sender"].sent_message_count > 4 {
-                    Some("too many messages sent".to_owned())
-                } else if state.node_states["receiver-node"]["receiver"].sent_message_count > 4 {
-                    Some("too many messages sent".to_owned())
-                } else {
-                    None
-                }
+                mc_prune_many_messages_sent(state, 4)
             }),
-            Box::new(|state| {
-                let delivered = state.node_states["receiver-node"]["receiver"].local_outbox.len();
-                if delivered == 2 {
-                    return Some("done".to_owned());
-                }
-                return None;
-            }),
+            mc_goal(),
             Box::new(move |state| {
-                if state.search_depth > 20 {
-                    return Err("too deep".to_owned());
-                }
-                let mut msg_count = HashMap::new();
-                let mut expected_msg_count = HashMap::new();
-                for msg in &messages {
-                    msg_count.insert(msg.data.clone(), 0);
-                    *expected_msg_count.entry(&msg.data).or_insert(0) += 1;
-                }
-                let delivered = &state.node_states["receiver-node"]["receiver"].local_outbox;
-                // check that delivered messages have expected type and data
-                for msg in delivered.iter() {
-                    // assuming all messages have the same type
-                    if msg.tip != messages[0].tip {
-                        return Err(format!("Wrong message type {}", msg.tip));
-                    }
-                    if !msg_count.contains_key(&msg.data) {
-                        return Err(format!("Wrong message data: {}", msg.data));
-                    }
-                    *msg_count.get_mut(&msg.data).unwrap() += 1;
-                }
-                // check delivered message count according to expected guarantees
-                for (data, count) in msg_count {
-                    let expected_count = expected_msg_count[&data];
-                    if config.reliable && count < expected_count && state.events.available_events_num() == 0 {
-                        println!("{:?}", state);
-                        return Err(format!(
-                            "Message {} is not delivered (observed count {} < expected count {})",
-                            data, count, expected_count
-                        ));
-                    }
-                    if config.once && count > expected_count {
-                        return Err(format!(
-                            "Message {} is delivered more than once (observed count {} > expected count {})",
-                            data, count, expected_count
-                        ));
-                    }
-                }
-                // check message delivery order
-                if config.ordered {
-                    let mut next_idx = 0;
-                    for i in 0..delivered.len() {
-                        let msg = &delivered[i];
-                        let mut matched = false;
-                        while !matched && next_idx < messages.len() {
-                            if msg.data == messages[next_idx].data {
-                                matched = true;
-                            } else {
-                                next_idx += 1;
-                            }
-                        }
-                        if !matched {
-                            return Err(format!(
-                                "Order violation: {} after {}",
-                                msg.data,
-                                &delivered[i - 1].data
-                            ));
-                        }
-                    }
-                }
-                Ok(())
+                mc_check_too_deep(state, 20)?;
+                mc_check_received_messages(state, &messages, &config)
             }),
             None,
             dslab_mp::mc::strategy::ExecutionMode::Debug,
@@ -460,78 +494,11 @@ fn test_model_checking_unreliable_network(config: &TestConfig) -> TestResult {
         &sys,
         Box::new(Dfs::new(
             Box::new(|state| {
-                if state.search_depth > 5 {
-                    Some("too deep".to_owned())
-                } else {
-                    None
-                }
+                mc_check_too_deep(state, 5).err()
             }),
-            Box::new(|state| {
-                let delivered = state.node_states["receiver-node"]["receiver"].local_outbox.len();
-                if delivered == 2 {
-                    return Some("done".to_owned());
-                }
-                return None;
-            }),
+            mc_goal(),
             Box::new(move |state| {
-                let mut msg_count = HashMap::new();
-                let mut expected_msg_count = HashMap::new();
-                for msg in &messages {
-                    msg_count.insert(msg.data.clone(), 0);
-                    *expected_msg_count.entry(&msg.data).or_insert(0) += 1;
-                }
-                let delivered = &state.node_states["receiver-node"]["receiver"].local_outbox;
-                // check that delivered messages have expected type and data
-                for msg in delivered.iter() {
-                    // assuming all messages have the same type
-                    if msg.tip != messages[0].tip {
-                        return Err(format!("Wrong message type {}", msg.tip));
-                    }
-                    if !msg_count.contains_key(&msg.data) {
-                        return Err(format!("Wrong message data: {}", msg.data));
-                    }
-                    *msg_count.get_mut(&msg.data).unwrap() += 1;
-                }
-                // check delivered message count according to expected guarantees
-                for (data, count) in msg_count {
-                    let expected_count = expected_msg_count[&data];
-                    if config.reliable && count < expected_count && state.events.available_events_num() == 0 {
-                        println!("{:?}", state);
-                        return Err(format!(
-                            "Message {} is not delivered (observed count {} < expected count {})",
-                            data, count, expected_count
-                        ));
-                    }
-                    if config.once && count > expected_count {
-                        return Err(format!(
-                            "Message {} is delivered more than once (observed count {} > expected count {})",
-                            data, count, expected_count
-                        ));
-                    }
-                }
-                // check message delivery order
-                if config.ordered {
-                    let mut next_idx = 0;
-                    for i in 0..delivered.len() {
-                        let msg = &delivered[i];
-                        let mut matched = false;
-                        while !matched && next_idx < messages.len() {
-                            if msg.data == messages[next_idx].data {
-                                matched = true;
-                            } else {
-                                next_idx += 1;
-                            }
-                        }
-                        if !matched {
-                            return Err(format!(
-                                "Order violation: {} after {}",
-                                msg.data,
-                                &delivered[i - 1].data
-                            ));
-                        }
-                    }
-                }
-                Ok(())
+                mc_check_received_messages(state, &messages, &config)
             }),
             None,
             dslab_mp::mc::strategy::ExecutionMode::Debug,
@@ -564,89 +531,13 @@ fn test_model_checking_limit_drop_number(config: &TestConfig) -> TestResult {
         Box::new(Dfs::new(
             Box::new(|state| {
                 let num_drops_allowed: u64 = 3;
-                let drops = state.log.iter().filter(|event| 
-                    if let McEvent::MessageDropped{..} = **event {
-                        true
-                    } else {
-                        false
-                    }
-                ).count();
-                if drops > num_drops_allowed as usize {
-                    Some("too many dropped messages".to_owned())
-                } else if state.node_states["receiver-node"]["receiver"].sent_message_count > num_drops_allowed + 2 {
-                    Some("too many messages sent".to_owned())
-                } else if state.node_states["sender-node"]["sender"].sent_message_count > num_drops_allowed + 2 {
-                    Some("too many messages sent".to_owned())
-                } else {
-                    None
-                }
+                mc_prune_number_of_drops(state, num_drops_allowed).or_else(|| {
+                    mc_prune_many_messages_sent(state, 2 + num_drops_allowed)
+                })
             }),
-            Box::new(|state| {
-                let delivered = state.node_states["receiver-node"]["receiver"].local_outbox.len();
-                if delivered == 2 {
-                    return Some("done".to_owned());
-                }
-                return None;
-            }),
+            mc_goal(),
             Box::new(move |state| {
-                let mut msg_count = HashMap::new();
-                let mut expected_msg_count = HashMap::new();
-                for msg in &messages {
-                    msg_count.insert(msg.data.clone(), 0);
-                    *expected_msg_count.entry(&msg.data).or_insert(0) += 1;
-                }
-                let delivered = &state.node_states["receiver-node"]["receiver"].local_outbox;
-                // check that delivered messages have expected type and data
-                for msg in delivered.iter() {
-                    // assuming all messages have the same type
-                    if msg.tip != messages[0].tip {
-                        return Err(format!("Wrong message type {}", msg.tip));
-                    }
-                    if !msg_count.contains_key(&msg.data) {
-                        return Err(format!("Wrong message data: {}", msg.data));
-                    }
-                    *msg_count.get_mut(&msg.data).unwrap() += 1;
-                }
-                // check delivered message count according to expected guarantees
-                for (data, count) in msg_count {
-                    let expected_count = expected_msg_count[&data];
-                    if config.reliable && count < expected_count && state.events.available_events_num() == 0 {
-                        println!("{:?}", state);
-                        return Err(format!(
-                            "Message {} is not delivered (observed count {} < expected count {})",
-                            data, count, expected_count
-                        ));
-                    }
-                    if config.once && count > expected_count {
-                        return Err(format!(
-                            "Message {} is delivered more than once (observed count {} > expected count {})",
-                            data, count, expected_count
-                        ));
-                    }
-                }
-                // check message delivery order
-                if config.ordered {
-                    let mut next_idx = 0;
-                    for i in 0..delivered.len() {
-                        let msg = &delivered[i];
-                        let mut matched = false;
-                        while !matched && next_idx < messages.len() {
-                            if msg.data == messages[next_idx].data {
-                                matched = true;
-                            } else {
-                                next_idx += 1;
-                            }
-                        }
-                        if !matched {
-                            return Err(format!(
-                                "Order violation: {} after {}",
-                                msg.data,
-                                &delivered[i - 1].data
-                            ));
-                        }
-                    }
-                }
-                Ok(())
+                mc_check_received_messages(state, &messages, &config)
             }),
             None,
             dslab_mp::mc::strategy::ExecutionMode::Debug,
