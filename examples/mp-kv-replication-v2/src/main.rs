@@ -1,11 +1,19 @@
 use std::borrow::Cow;
+use std::cmp::min;
 use std::collections::HashSet;
-use std::env;
+use std::collections::hash_map::DefaultHasher;
+use std::{env, num};
+use std::hash::{Hash, Hasher};
 use std::io::Write;
 
 use assertables::{assume, assume_eq};
 use byteorder::{ByteOrder, LittleEndian};
 use clap::Parser;
+use dslab_mp::mc::events::McEvent;
+use dslab_mp::mc::model_checker::ModelChecker;
+use dslab_mp::mc::strategies::dfs::Dfs;
+use dslab_mp::mc::strategy::McResult;
+use dslab_mp::mc::system::McState;
 use env_logger::Builder;
 use log::LevelFilter;
 use rand::distributions::WeightedIndex;
@@ -802,6 +810,559 @@ fn test_shopping_xcart_2(config: &TestConfig) -> TestResult {
     Ok(true)
 }
 
+fn mc_query_prune<'a>(max_timers_allowed: u64, max_messages_allowed: u64) -> Box<dyn Fn(&McState) -> Option<String> + 'a> {
+    Box::new(move |state: &McState| {
+        let mut num_timers = 0;
+        let mut num_messages = 0;
+
+        for event in &state.log {
+            if let McEvent::TimerFired{..} = event {
+                num_timers += 1;
+            }
+            if let McEvent::MessageReceived{..} = event {
+                num_messages += 1;
+            }
+            if let McEvent::MessageDropped{..} = event {
+                num_messages += 1;
+            }
+        }
+        if num_timers > max_timers_allowed {
+            return Some("too many fired timers".to_owned());
+        }
+        if num_messages > max_messages_allowed {
+            Some("too many messages sent".to_owned())
+        } else {
+            None
+        }
+    })
+}
+
+fn mc_prune_none<'a>() -> Box<dyn Fn(&McState) -> Option<String> + 'a> {
+    Box::new(|_| None)
+}
+
+fn mc_invariant_ok<'a>() -> Box<dyn Fn(&McState) -> Result<(), String> + 'a> {
+    Box::new(|_| Ok(()))
+}
+
+fn mc_goal_query_finished<'a>(node: &'a str, proc: &'a str) -> Box<dyn Fn(&McState) -> Option<String> + 'a> {
+    Box::new(move |state| {
+        let messages = &state.node_states[node][proc].local_outbox;
+        if messages.is_empty() {
+            return None;
+        }
+        Some("request finished".to_owned())
+    })
+}
+
+fn mc_goal_depth<'a>(max_depth: u64) -> Box<dyn Fn(&McState) -> Option<String> + 'a>{
+    Box::new(move |state: &McState| {
+        if mc_state_explored(max_depth)(state) {
+            Some("explored".to_owned())
+        } else {
+            None
+        }
+    })
+}
+
+fn mc_state_explored<'a>(max_depth: u64) -> Box<dyn Fn(&McState) -> bool + 'a>{
+    Box::new(move |state: &McState| {
+        if state.search_depth == max_depth || state.events.available_events_num() == 0 {
+            true
+        } else {
+            false
+        }
+    })
+}
+
+fn sorted_cart(cart: &Vec<&str>) -> Vec<String> {
+    let mut res = vec![];
+    for items in cart {
+        let mut items = items.split(',').map(|s| s.to_owned()).collect::<Vec<String>>();
+        items.sort();
+        res.push(items.join(","));
+    }
+    res.sort();
+    res
+}
+
+
+fn mc_get_invariant<'a>(node: &'a str, proc: &'a str, key: &'a str, mut expected: Vec<&'a str>, max_steps: Option<u32>) -> Box<dyn Fn() -> Box<dyn Fn(&McState) -> Result<(), String> + 'a> + 'a> {
+    Box::new(move || {
+        let expected = expected.clone();
+        Box::new(move |state: &McState| -> Result<(), String> {
+        let messages = &state.node_states[node][proc].local_outbox;
+        if let Some(message) = messages.get(0) {
+            if message.tip != "GET_RESP" {
+                return Err(format!("wrong type {}", message.tip));
+            }
+            let mut data: GetRespMessage = serde_json::from_str(&message.data).map_err(|err| err.to_string())?;
+            if data.key != key {
+                return Err(format!("wrong key {}", data.key));
+            }
+            if sorted_cart(&data.values) != sorted_cart(&expected) {
+                println!("{:?}", expected);
+                return Err(format!("wrong value {:?}", data.values));
+            }
+        } else if let Some(max_steps) = max_steps {
+            if state.search_depth > max_steps as u64 {
+                return Err(format!("nothing found but already should be"));
+            }
+        }
+        Ok(())
+    })})
+}
+
+fn mc_put_invariant<'a>(node: &'a str, proc: &'a str, key: &'a str, value: &'a Vec<&'a str>, max_steps: Option<u32>) -> Box<dyn Fn() -> Box<dyn Fn(&McState) -> Result<(), String> + 'a> + 'a> {
+    Box::new(move || Box::new(move |state: &McState| -> Result<(), String> {
+        let messages = &state.node_states[node][proc].local_outbox;
+        if let Some(message) = messages.get(0) {
+            if message.tip != "PUT_RESP" {
+                return Err(format!("wrong type {}", message.tip));
+            }
+            let data: PutRespMessage = serde_json::from_str(&message.data).map_err(|err| err.to_string())?;
+            if data.key != key {
+                return Err(format!("wrong key {}", data.key));
+            }
+            if data.values != *value {
+                return Err(format!("wrong value {:?}", data.values));
+            }
+        } else if let Some(max_steps) = max_steps {
+            if state.search_depth == max_steps as u64 {
+                return Err(format!("nothing found but already should be"));
+            }
+        }
+        Ok(())
+    }))
+}
+
+fn mc_query_collect<'a>(node: &'a str, proc: &'a str) -> Box<dyn Fn(&McState) -> bool + 'a> {
+    Box::new(move |state: &McState| {
+        let messages = &state.node_states[node][proc].local_outbox;
+        !messages.is_empty()
+    })
+}
+
+fn mc_clear_state_history(state: &mut McState) {
+    state.log.clear();
+    for (node, node_state) in state.node_states.iter_mut() {
+        node_state.get_mut(node).map(|y| y.sent_message_count = 0);
+        node_state.get_mut(node).map(|y| y.received_message_count = 0);
+        node_state.get_mut(node).map(|y| y.local_outbox.clear());
+    }
+}
+
+fn mc_check_query<'a>(sys: &'a mut System, node: &'a str, proc: &'a str, invariant: Box<dyn Fn() -> Box<dyn Fn(&McState) -> Result<(), String> + 'a> + 'a>, msg: Message, prune_steps: u32, start_states: Option<HashSet<McState>>) -> Result<McResult, String> {
+    if let Some(start_states) = start_states {
+        let mut combined_result = McResult::default();
+        for mut start_state in start_states {
+            mc_clear_state_history(&mut start_state);
+            let mut mc = ModelChecker::new(
+                &sys,
+                Box::new(Dfs::new(
+                    mc_query_prune(2, (prune_steps - 2) as u64),
+                    mc_goal_query_finished(node, proc),
+                    invariant(),
+                    Some(mc_query_collect(node, proc)),
+                    dslab_mp::mc::strategy::ExecutionMode::Debug,
+                )),
+            );
+            mc.set_state(start_state);
+            mc.apply_event(McEvent::LocalMessageReceived{ msg: msg.clone(), dest: proc.to_string() });
+            let res = mc.run();
+            if res.is_err() {
+                return Err(format!("model checher found error: {}", res.as_ref().err().unwrap()));
+            }
+            combined_result.combine(res.unwrap());
+        }
+        println!("{:?}", combined_result.summary);
+        Ok(combined_result)
+    } else {
+        let mut mc = ModelChecker::new(
+            &sys,
+            Box::new(Dfs::new(
+                mc_query_prune(2, (prune_steps - 2) as u64),
+                mc_goal_query_finished(node, proc),
+                invariant(),
+                Some(mc_query_collect(node, proc)),
+                dslab_mp::mc::strategy::ExecutionMode::Debug,
+            )),
+        );
+        mc.apply_event(McEvent::LocalMessageReceived{ msg, dest: proc.to_string() });
+        let res = mc.run();
+        if res.is_err() {
+            return Err(format!("model checher found error: {}", res.as_ref().err().unwrap()));
+        }
+        println!("{:?}", res.clone().unwrap().summary);
+        Ok(res.unwrap())
+    }
+}
+
+fn check_mc_get(sys: &mut System, node: &str, proc: &str, key: &str, expected: Vec<&str>, quorum: u8, prune_steps: u32, max_steps: Option<u32>, start_states: Option<HashSet<McState>>) -> Result<McResult, String> {
+    println!("check_mc_get");
+    let msg = Message::json("GET", &GetMessage{key, quorum});
+    mc_check_query(
+        sys, node, proc, 
+        mc_get_invariant(node, proc, key, expected, max_steps),
+        msg, prune_steps, start_states
+    )
+}
+
+fn check_mc_put(sys: &mut System, node: &str, proc: &str, key: &str, value: &str, expected: Vec<&str>, context: Option<String>, quorum: u8, prune_steps: u32, max_steps: Option<u32>, start_states: Option<HashSet<McState>>) -> Result<McResult, String> {
+    println!("check_mc_put");
+    let msg = Message::json("PUT", &PutMessage{key, value, context, quorum});
+    mc_check_query(
+        sys, node, proc, 
+        mc_put_invariant(node, proc, key, &expected, max_steps),
+        msg, prune_steps, start_states
+    )
+}
+
+fn get_n_start_states(start_states: HashSet<McState>, mut n: usize) -> HashSet<McState> {
+    n = min(n, start_states.len());
+    let mut hashed = start_states.into_iter().map(|state| {
+        let mut hasher = DefaultHasher::default();
+        state.hash(&mut hasher);
+        (hasher.finish(), state)
+    }).collect::<Vec<(u64, McState)>>();
+    hashed.sort_by_key(|(a, b)| *a);
+    HashSet::from_iter(hashed.split_at(n).0.into_iter().map(|(a, b)| b.clone()))
+}
+
+fn mc_stabilize(sys: &mut System, num_steps: u64, start_states: Option<HashSet<McState>>) -> Result<McResult, String> {
+    println!("mc_stabilize");
+    
+    if let Some(start_states) = start_states {
+        let mut start_states_updated = HashSet::new();
+        for start_state in start_states {
+            let mut start_state_updated = start_state.clone();
+            for event_id in start_state.events.available_events() {
+                if let Some(McEvent::MessageDropped { .. }) = start_state.events.get(event_id) {
+                    start_state_updated.events.pop(event_id);
+                } else if let Some(McEvent::TimerCancelled { .. }) = start_state.events.get(event_id) {
+                    start_state_updated.events.pop(event_id);
+                } else {
+                    continue;
+                }
+            }
+            start_states_updated.insert(start_state_updated);
+        }
+        let mut combined_result = McResult::default();
+        for start_state in start_states_updated {
+            // let start_state = start_states.into_iter().next().unwrap();
+            let mut mc = ModelChecker::new(
+                &sys,
+                Box::new(Dfs::new(
+                    mc_query_prune(5, num_steps + 1 - 5),
+                    mc_goal_depth(num_steps),
+                    mc_invariant_ok(),
+                    Some(Box::new(|state| {mc_state_explored(num_steps)(state) || mc_query_prune(5, num_steps + 1 - 5)(state).is_some() })),
+                    dslab_mp::mc::strategy::ExecutionMode::Debug,
+                )),
+            );
+            mc.set_state(start_state);
+            let res = mc.run();
+            if res.is_err() {
+                return Err(format!("model checher found error: {}", res.as_ref().err().unwrap()));
+            }
+            combined_result.combine(res.unwrap());
+        }
+        println!("{:?}", combined_result.summary);
+        Ok(combined_result)
+    } else {
+        let mut mc = ModelChecker::new(
+            &sys,
+            Box::new(Dfs::new(
+                mc_prune_none(),
+                mc_goal_depth(num_steps),
+                mc_invariant_ok(),
+                Some(mc_state_explored(num_steps)),
+                dslab_mp::mc::strategy::ExecutionMode::Debug,
+            )),
+        );
+        let res = mc.run();
+        if res.is_err() {
+            return Err(format!("model checher found error: {}", res.as_ref().err().unwrap()));
+        }
+        println!("{:?}", res.clone().unwrap().summary);
+        Ok(res.unwrap())
+    }    
+}
+
+fn test_mc_basic(config: &TestConfig) -> TestResult {
+    let mut sys = build_system(config);
+
+    let procs = sys.process_names_sorted();
+
+    let key = "ZXSA0H2K";
+    let replicas = key_replicas(&key, &sys);
+    let non_replicas = key_non_replicas(&key, &sys);
+    
+
+    println!("Key {} replicas: {:?}", key, replicas);
+    println!("Key {} non-replicas: {:?}", key, non_replicas);
+    sys.network().set_delay(0.0);
+
+    let mut start_states = HashSet::new();
+    // get key from the first node
+    start_states = check_mc_get(&mut sys, &procs[0], &procs[0], &key, vec![], 2, 7, None, None)?.collected;
+    println!("stage 1: {}", start_states.len());
+    if start_states.is_empty() {
+        return Err("stage 1 has no positive outcomes".to_owned());
+    }
+
+    start_states = HashSet::from_iter(vec![start_states.into_iter().next().unwrap()].into_iter());
+    // put key from the first replica
+    let value = "9ps2p1ua";
+    start_states = check_mc_put(&mut sys, &replicas[0], &replicas[0], &key, &value, vec![&value], None, 2, 7, None, None)?.collected;
+    println!("stage 2: {}", start_states.len());
+    start_states = get_n_start_states(start_states, 10);
+    if start_states.is_empty() {
+        return Err("stage 2 has no positive outcomes".to_owned());
+    }
+
+    start_states = get_n_start_states(start_states, 10);
+    
+    start_states = mc_stabilize(&mut sys, 15, Some(start_states))?.collected;
+    println!("stage 3: {}", start_states.len());
+    if start_states.is_empty() {
+        return Err("stage 3 has no positive outcomes".to_owned());
+    }
+
+    // get key from the last replica
+    start_states = check_mc_get(&mut sys, &replicas[2], &replicas[2], &key, vec![&value], 2, 15, Some(15), Some(start_states))?.collected;
+    println!("stage 4: {}", start_states.len());
+    if start_states.is_empty() {
+        return Err("stage 4 has no positive outcomes".to_owned());
+    }
+    Ok(true)
+}
+
+
+fn test_mc_sloppy_quorum_hinted_handoff(config: &TestConfig) -> TestResult {
+    let mut sys = build_system(config);
+
+    let procs = sys.process_names_sorted();
+
+    let key = "ZXSA0H2K";
+    let replicas = key_replicas(&key, &sys);
+    let non_replicas = key_non_replicas(&key, &sys);
+    
+
+    println!("Key {} replicas: {:?}", key, replicas);
+    println!("Key {} non-replicas: {:?}", key, non_replicas);
+
+    sys.network().make_partition(&[&replicas[0], &non_replicas[0]], &[&replicas[1], &replicas[2]]);
+    sys.network().set_delay(0.0);
+
+    let mut start_states = HashSet::new();
+    // get key from the first node
+    start_states = check_mc_get(&mut sys, &replicas[0], &replicas[0], &key, vec![], 2, 12, None, None)?.collected;
+    println!("stage 1: {}", start_states.len());
+    if start_states.is_empty() {
+        return Err("stage 1 has no positive outcomes".to_owned());
+    }
+    // put key from the first replica
+    let value = "9ps2p1ua";
+    start_states = check_mc_put(&mut sys, &replicas[0], &replicas[0], &key, &value, vec![&value], None, 2, 12, None, None)?.collected;
+    println!("stage 2: {}", start_states.len());
+    start_states = get_n_start_states(start_states, 10);
+    if start_states.is_empty() {
+        return Err("stage 2 has no positive outcomes".to_owned());
+    }
+   
+    sys.network().reset_network();
+    sys.network().set_delay(0.0);
+    
+    start_states = mc_stabilize(&mut sys, 15, Some(start_states))?.collected;
+    println!("stage 3: {}", start_states.len());
+    if start_states.is_empty() {
+        return Err("stage 3 has no positive outcomes".to_owned());
+    }
+
+    start_states = get_n_start_states(start_states, 10);
+    sys.network().make_partition(&[&replicas[0], &non_replicas[0]], &[&replicas[1], &replicas[2]]);
+    sys.network().set_delay(0.0);
+    // get key from the last replica
+    start_states = check_mc_get(&mut sys, &replicas[2], &replicas[2], &key, vec![&value], 2, 15, Some(15), Some(start_states))?.collected;
+    println!("stage 4: {}", start_states.len());
+    if start_states.is_empty() {
+        return Err("stage 4 has no positive outcomes".to_owned());
+    }
+    Ok(true)
+}
+
+fn test_mc_concurrent(config: &TestConfig) -> TestResult {
+    let mut sys = build_system(config);
+
+    let procs = sys.process_names_sorted();
+
+    let key = "ZXSA0H2K";
+    let replicas = key_replicas(&key, &sys);
+    let non_replicas = key_non_replicas(&key, &sys);
+    
+
+    println!("Key {} replicas: {:?}", key, replicas);
+    println!("Key {} non-replicas: {:?}", key, non_replicas);
+
+    // put key to the first replica
+    let value = "9ps2p1ua";
+    let value2 = "8ab54uye";
+    
+    sys.network().disconnect_node(&replicas[0]);
+    sys.network().disconnect_node(&replicas[1]);
+    // just so we dont need to prune order for messages and timers
+    sys.network().set_delay(0.0);
+    sys.send_local_message(&replicas[0], Message::json("PUT", &PutMessage{quorum: 1, key, value, context: None}));
+
+    let mut mc = ModelChecker::new(
+        &sys,
+        Box::new(Dfs::new(
+            mc_query_prune(1, 6),
+            mc_goal_query_finished(&replicas[0], &replicas[0]),
+            mc_invariant_ok(),
+            Some(mc_query_collect(&replicas[0], &replicas[0])),
+            dslab_mp::mc::strategy::ExecutionMode::Debug,
+        ))
+    );
+    let res = mc.run();
+    if res.is_err() {
+        return Err(format!("model checking found error {}", res.as_ref().err().unwrap()));
+    }
+    println!("{:?}", res.clone().unwrap().summary);
+    mc = ModelChecker::new(
+        &sys,
+        Box::new(Dfs::new(
+            mc_query_prune(1, 6),
+            mc_goal_query_finished(&replicas[1], &replicas[1]),
+            mc_invariant_ok(),
+            Some(mc_query_collect(&replicas[1], &replicas[1])),
+            dslab_mp::mc::strategy::ExecutionMode::Debug,
+        ))
+    );
+    let mut start_states = res.unwrap().collected;
+    println!("stage 1: {}", start_states.len());
+    let mut after_put = McResult::default();
+    for mut start_state in start_states {
+        mc_clear_state_history(&mut start_state);
+        mc.set_state(start_state);
+        mc.apply_event(McEvent::LocalMessageReceived { msg: Message::json("PUT", &PutMessage{quorum: 1, key, value: value2, context: None}), dest: replicas[1].clone() });
+        let res = mc.run();
+        if res.is_err() {
+            return Err(format!("model checking found error {}", res.as_ref().err().unwrap()));
+        }
+        after_put.combine(res.unwrap());        
+    }
+    let mut start_states = after_put.collected;
+    start_states = get_n_start_states(start_states, 10);
+    if start_states.is_empty() {
+        return Err("stage 2 has no positive outcomes".to_owned());
+    }
+    sys.network().reset_network();
+    sys.network().set_drop_rate(0.0);
+    sys.network().set_delay(0.0);
+    let mut start_states_updated = HashSet::new();
+    for mut start_state in start_states {
+        while !start_state.events.available_events().is_empty() {
+            start_state.events.pop(start_state.events.available_events().into_iter().next().unwrap());
+        }
+        start_states_updated.insert(start_state);
+    }
+    start_states = check_mc_get(&mut sys, &replicas[2], &replicas[2], &key, vec![&value, &value2], 3, 16, Some(16), Some(start_states_updated))?.collected;
+    println!("stage 2: {}", start_states.len());
+    if start_states.is_empty() {
+        return Err("stage 2 has no positive outcomes".to_owned());
+    }
+    Ok(true)
+}
+
+fn test_mc_concurrent_cart(config: &TestConfig) -> TestResult {
+    let mut sys = build_system(config);
+
+    let procs = sys.process_names_sorted();
+
+    let key = "CART_ZXSA0H2K";
+    let replicas = key_replicas(&key, &sys);
+    let non_replicas = key_non_replicas(&key, &sys);
+    
+
+    println!("Key {} replicas: {:?}", key, replicas);
+    println!("Key {} non-replicas: {:?}", key, non_replicas);
+
+    // put key to the first replica
+    let value = "a,b,c";
+    let value2 = "b,c,d";
+    
+    sys.network().disconnect_node(&replicas[0]);
+    sys.network().disconnect_node(&replicas[1]);
+    // just so we dont need to prune order for messages and timers
+    sys.network().set_delay(0.0);
+    sys.send_local_message(&replicas[0], Message::json("PUT", &PutMessage{quorum: 1, key, value, context: None}));
+
+    let mut mc = ModelChecker::new(
+        &sys,
+        Box::new(Dfs::new(
+            mc_query_prune(1, 6),
+            mc_goal_query_finished(&replicas[0], &replicas[0]),
+            mc_invariant_ok(),
+            Some(mc_query_collect(&replicas[0], &replicas[0])),
+            dslab_mp::mc::strategy::ExecutionMode::Debug,
+        ))
+    );
+    let res = mc.run();
+    if res.is_err() {
+        return Err(format!("model checking found error {}", res.as_ref().err().unwrap()));
+    }
+    println!("{:?}", res.clone().unwrap().summary);
+    let mut start_states = res.unwrap().collected;
+    println!("stage one: {}", start_states.len());
+    let mut after_put = McResult::default();
+    mc = ModelChecker::new(
+        &sys,
+        Box::new(Dfs::new(
+            mc_query_prune(1, 6),
+            mc_goal_query_finished(&replicas[1], &replicas[1]),
+            mc_invariant_ok(),
+            Some(mc_query_collect(&replicas[1], &replicas[1])),
+            dslab_mp::mc::strategy::ExecutionMode::Debug,
+        ))
+    );
+    for mut start_state in start_states {
+        mc_clear_state_history(&mut start_state);
+        mc.set_state(start_state);
+        mc.apply_event(McEvent::LocalMessageReceived { msg: Message::json("PUT", &PutMessage{quorum: 1, key, value: value2, context: None}), dest: replicas[1].clone() });
+        let res = mc.run();
+        if res.is_err() {
+            return Err(format!("model checking found error {}", res.as_ref().err().unwrap()));
+        }
+        after_put.combine(res.unwrap());        
+    }
+    println!("{:?}", after_put.summary);
+
+    let mut start_states = after_put.collected;
+    start_states = get_n_start_states(start_states, 10);
+    if start_states.is_empty() {
+        return Err("stage 1 has no positive outcomes".to_owned());
+    }
+    
+    sys.network().reset_network();
+    sys.network().set_drop_rate(0.0);
+    sys.network().set_delay(0.0);
+    let mut start_states_updated = HashSet::new();
+    for mut start_state in start_states {
+        while !start_state.events.available_events().is_empty() {
+            start_state.events.pop(start_state.events.available_events().into_iter().next().unwrap());
+        }
+        start_states_updated.insert(start_state);
+    }
+    start_states = check_mc_get(&mut sys, &replicas[2], &replicas[2], &key, vec!["a,b,c,d"], 3, 12, Some(12), Some(start_states_updated))?.collected;
+    println!("stage 2: {}", start_states.len());
+    if start_states.is_empty() {
+        return Err("stage 2 has no positive outcomes".to_owned());
+    }
+    Ok(true)
+}
+
 // CLI -----------------------------------------------------------------------------------------------------------------
 
 /// Replicated KV Store v2 Homework Tests
@@ -858,6 +1419,15 @@ fn main() {
     tests.add("SHOPPING CART 2", test_shopping_cart_2, config);
     tests.add("SHOPPING XCART 1", test_shopping_xcart_1, config);
     tests.add("SHOPPING XCART 2", test_shopping_xcart_2, config);
+    let mc_config = TestConfig {
+        process_factory: &process_factory,
+        process_count: 4,
+        seed: args.seed,
+    };
+    tests.add("MODEL CHECKING NORMAL", test_mc_basic, mc_config);
+    tests.add("MODEL CHECKING SLOPPY QUORUM", test_mc_sloppy_quorum_hinted_handoff, mc_config);
+    tests.add("MODEL CHECKING CONCURRENT", test_mc_concurrent, mc_config);
+    tests.add("MODEL CHECKING CONCURRENT CART", test_mc_concurrent_cart, mc_config);
 
     if args.test.is_none() {
         tests.run();
