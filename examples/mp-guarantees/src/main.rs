@@ -415,6 +415,22 @@ fn mc_check_too_deep(state: &McState, depth: u64) -> Result<(), String> {
     }
 }
 
+fn mc_prune_number_of_timers(state: &McState, timers_allowed: u64) -> Option<String> {
+    let timers = state.log.iter().filter(|event| 
+        if let McEvent::TimerFired{..} = **event {
+            true
+        } else {
+            false
+        }
+    ).count();
+    if timers > timers_allowed as usize {
+        Some("too many fired timers".to_owned())
+    } else {
+        None
+    }
+}
+
+
 fn mc_prune_number_of_drops(state: &McState, drops_allowed: u64) -> Option<String> {
     let drops = state.log.iter().filter(|event| 
         if let McEvent::MessageDropped{..} = **event {
@@ -456,7 +472,9 @@ fn test_model_checking_reliable_network(config: &TestConfig) -> TestResult {
         &sys,
         Box::new(Dfs::new(
             Box::new(|state| {
-                mc_prune_many_messages_sent(state, 4)
+                mc_prune_many_messages_sent(state, 4).or_else(||
+                mc_prune_number_of_timers(state, 4)
+                )
             }),
             mc_goal(),
             Box::new(move |state| {
@@ -531,9 +549,10 @@ fn test_model_checking_limit_drop_number(config: &TestConfig) -> TestResult {
         Box::new(Dfs::new(
             Box::new(|state| {
                 let num_drops_allowed: u64 = 3;
-                mc_prune_number_of_drops(state, num_drops_allowed).or_else(|| {
-                    mc_prune_many_messages_sent(state, 2 + num_drops_allowed)
-                })
+                mc_prune_number_of_drops(state, num_drops_allowed).or_else(||
+                mc_prune_many_messages_sent(state, 2 + num_drops_allowed).or_else(||
+                mc_prune_number_of_timers(state, 4)
+                ))
             }),
             mc_goal(),
             Box::new(move |state| {
