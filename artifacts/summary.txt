@@ -2518,8 +2518,11 @@ Failed runs (timed out) (2): ['solution_Deimvis.py', 'solution_piezzacondoleezza
             "[AT MOST ONCE] NORMAL NON-UNIQUE": "FAILED",
             "[EXACTLY ONCE ORDERED] DELAYED": "PASSED",
             "[EXACTLY ONCE ORDERED] DELAYED+DUPLICATED": "PASSED",
-            "[EXACTLY ONCE ORDERED] DROPPED": "RUNTIME_ERROR",
+            "[EXACTLY ONCE ORDERED] DROPPED": "PASSED",
             "[EXACTLY ONCE ORDERED] DUPLICATED": "PASSED",
+            "[EXACTLY ONCE ORDERED] MODEL CHECKING": "PASSED",
+            "[EXACTLY ONCE ORDERED] MODEL CHECKING HALF-RELIABLE": "RUNTIME_ERROR",
+            "[EXACTLY ONCE ORDERED] MODEL CHECKING UNRELIABLE": "PASSED",
             "[EXACTLY ONCE ORDERED] NORMAL": "FAILED",
             "[EXACTLY ONCE ORDERED] NORMAL NON-UNIQUE": "FAILED",
             "[EXACTLY ONCE] DELAYED": "PASSED",
@@ -5443,6 +5446,7 @@ Failed runs (timed out) (2): ['solution_Deimvis.py', 'solution_piezzacondoleezza
                 "solution_nastyaromanova.py",
                 "solution_neudachina.py",
                 "solution_pashagoose.py",
+                "solution_piezzacondoleezza.py",
                 "solution_qt0.py",
                 "solution_sandraglinnik.py",
                 "solution_Shuba-Buba.py",
@@ -5457,9 +5461,6 @@ Failed runs (timed out) (2): ['solution_Deimvis.py', 'solution_piezzacondoleezza
                 "solution_xbreathoflife.py",
                 "solution_yanadlv.py",
                 "solution_yorky.py"
-            ],
-            "RUNTIME_ERROR": [
-                "solution_piezzacondoleezza.py"
             ]
         },
         "[EXACTLY ONCE ORDERED] DUPLICATED": {
@@ -5632,6 +5633,7 @@ Failed runs (timed out) (2): ['solution_Deimvis.py', 'solution_piezzacondoleezza
                 "solution_nastyaromanova.py",
                 "solution_neudachina.py",
                 "solution_pashagoose.py",
+                "solution_piezzacondoleezza.py",
                 "solution_qt0.py",
                 "solution_sandraglinnik.py",
                 "solution_Shuba-Buba.py",
@@ -5742,7 +5744,8 @@ Failed runs (timed out) (2): ['solution_Deimvis.py', 'solution_piezzacondoleezza
                 "solution_yorky.py"
             ],
             "RUNTIME_ERROR": [
-                "solution_Deimvis.py"
+                "solution_Deimvis.py",
+                "solution_piezzacondoleezza.py"
             ]
         },
         "[EXACTLY ONCE ORDERED] MODEL CHECKING UNRELIABLE": {
@@ -5821,6 +5824,7 @@ Failed runs (timed out) (2): ['solution_Deimvis.py', 'solution_piezzacondoleezza
                 "solution_nastyaromanova.py",
                 "solution_neudachina.py",
                 "solution_pashagoose.py",
+                "solution_piezzacondoleezza.py",
                 "solution_qt0.py",
                 "solution_sandraglinnik.py",
                 "solution_Shuba-Buba.py",
