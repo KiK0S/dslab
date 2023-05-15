@@ -1552,6 +1552,52 @@ fn test_mc_concurrent_cart(config: &TestConfig) -> TestResult {
     Ok(true)
 }
 
+
+fn test_mc_concurrent_xcart(config: &TestConfig) -> TestResult {
+    let mut sys = build_system(config);
+    let mut rand = Pcg64::seed_from_u64(config.seed);
+
+    let key = format!("xcart-{}", random_string(8, &mut rand)).to_uppercase();
+    let replicas = key_replicas(&key, &sys);    
+
+    sys.network().set_delay(0.0);
+    let mut start_states = check_mc_put(&mut sys, &replicas[2], &replicas[2], &key, "a,b", vec!["a,b"], None, 3, 12, Some(12), None)?.collected;
+    start_states = mc_stabilize(&mut sys, 15, Some(start_states))?.collected;
+    // start_states = start_states.into_iter().filter(|state| state.events.available_events_num() == 0).collect::<HashSet<McState>>();
+    sys.network().disconnect_node(&replicas[0]);
+    sys.network().disconnect_node(&replicas[1]);
+
+    for start_state in start_states {
+        let msg = &start_state.node_states[&replicas[2]][&replicas[2]].local_outbox[0];
+        let data: PutRespMessage = serde_json::from_str(&msg.data).map_err(|err| err.to_string())?;
+        let ctx = data.context.as_ref();
+        println!("CONTEXT {}", ctx);
+        let mut new_start_states = check_mc_put(&mut sys, &replicas[0], &replicas[0], &key, "a,b,c", vec!["a,b,c"], Some(ctx.to_string()), 1, 8, Some(8), Some(HashSet::from_iter(vec![start_state.clone()])))?.collected;
+        new_start_states = mc_stabilize(&mut sys, 4, Some(new_start_states))?.collected;
+        new_start_states = get_n_start_states(new_start_states, 10);
+        let mut after_add_states = HashSet::new();
+        for new_start_state in new_start_states {
+            let mut updated_state = new_start_state.clone();
+            for event_id in new_start_state.events.available_events() {
+                if let Some(McEvent::MessageDropped { .. }) = new_start_state.events.get(event_id) {
+                    updated_state.events.pop(event_id);
+                }
+                if let Some(McEvent::MessageReceived { .. }) = new_start_state.events.get(event_id) {
+                    updated_state.events.pop(event_id);
+                }
+            }
+            after_add_states.insert(updated_state);
+        }
+        after_add_states = get_n_start_states(after_add_states, 10);
+        new_start_states = check_mc_put(&mut sys, &replicas[1], &replicas[1], &key, "d", vec!["d"], Some(ctx.to_string()), 1, 8, Some(8), Some(after_add_states))?.collected;
+        new_start_states = get_n_start_states(new_start_states, 10);
+        sys.network().reset_network();
+        sys.network().set_delay(0.0);
+        check_mc_get(&mut sys, &replicas[2], &replicas[2], &key, vec!["c,d"], 3, 12, Some(12), Some(new_start_states))?;    
+    }
+    Ok(true)
+}
+
 // CLI -----------------------------------------------------------------------------------------------------------------
 
 /// Replicated KV Store v2 Homework Tests
@@ -1621,6 +1667,7 @@ fn main() {
     );
     tests.add("MODEL CHECKING CONCURRENT", test_mc_concurrent, mc_config);
     tests.add("MODEL CHECKING CONCURRENT CART", test_mc_concurrent_cart, mc_config);
+    tests.add("MODEL CHECKING CONCURRENT XCART", test_mc_concurrent_xcart, mc_config);
 
     if args.test.is_none() {
         tests.run();
