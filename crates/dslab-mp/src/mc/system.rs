@@ -47,7 +47,7 @@ pub struct McSystem {
     nodes: HashMap<String, McNode>,
     net: Rc<RefCell<McNetwork>>,
     pub(crate) events: PendingEvents,
-    search_depth: u64,
+    pub(crate) search_depth: u64,
     pub log: Vec<McEvent>,
 }
 
@@ -63,7 +63,7 @@ impl McSystem {
     }
 
     pub fn apply_event(&mut self, event: McEvent) {
-        self.search_depth += 1;
+        (self.search_depth, _) = self.search_depth.overflowing_add(1);
         self.log.push(event.clone());
         let mut new_events = match event {
             McEvent::MessageReceived { msg, src, dest, .. } => {

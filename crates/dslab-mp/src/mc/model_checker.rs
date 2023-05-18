@@ -79,6 +79,7 @@ impl<'a> ModelChecker<'a> {
     }
 
     pub fn apply_event(&mut self, event: McEvent) {
+        (self.system.search_depth, _) = self.system.search_depth.overflowing_sub(1);
         self.system.apply_event(event);
     }
 }
