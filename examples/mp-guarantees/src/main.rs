@@ -4,6 +4,10 @@ use std::io::Write;
 
 use assertables::{assume, assume_eq};
 use clap::Parser;
+use dslab_mp::mc::events::McEvent;
+use dslab_mp::mc::model_checker::ModelChecker;
+use dslab_mp::mc::strategies::dfs::Dfs;
+use dslab_mp::mc::system::McState;
 use env_logger::Builder;
 use log::LevelFilter;
 use rand::prelude::*;
@@ -332,6 +336,241 @@ fn test_chaos_monkey(config: &TestConfig) -> TestResult {
     Ok(true)
 }
 
+fn mc_goal<'a>() -> Box<dyn Fn(&McState) -> Option<String> + 'a> {
+    Box::new(|state| {
+        if state.node_states["receiver-node"]["receiver"].local_outbox.len() == 2 {
+            Some("got two messages".to_owned())
+        } else {
+            None
+        }
+    })
+}
+
+fn mc_check_received_messages(
+    state: &McState,
+    messages_expected: &Vec<Message>,
+    config: &TestConfig,
+) -> Result<(), String> {
+    let mut msg_count = HashMap::new();
+    let mut expected_msg_count = HashMap::new();
+    for msg in messages_expected {
+        msg_count.insert(msg.data.clone(), 0);
+        *expected_msg_count.entry(&msg.data).or_insert(0) += 1;
+    }
+    let delivered = &state.node_states["receiver-node"]["receiver"].local_outbox;
+    // check that delivered messages have expected type and data
+    for msg in delivered.iter() {
+        // assuming all messages have the same type
+        if msg.tip != messages_expected.iter().next().unwrap().tip {
+            return Err(format!("Wrong message type {}", msg.tip));
+        }
+        if !msg_count.contains_key(&msg.data) {
+            return Err(format!("Wrong message data: {}", msg.data));
+        }
+        *msg_count.get_mut(&msg.data).unwrap() += 1;
+    }
+    // check delivered message count according to expected guarantees
+    for (data, count) in msg_count {
+        let expected_count = expected_msg_count[&data];
+        if config.reliable && count < expected_count && state.events.available_events_num() == 0 {
+            println!("{:?}", state);
+            return Err(format!(
+                "Message {} is not delivered (observed count {} < expected count {})",
+                data, count, expected_count
+            ));
+        }
+        if config.once && count > expected_count {
+            return Err(format!(
+                "Message {} is delivered more than once (observed count {} > expected count {})",
+                data, count, expected_count
+            ));
+        }
+    }
+    // check message delivery order
+    if config.ordered {
+        let mut next_idx = 0;
+        for i in 0..delivered.len() {
+            let msg = &delivered[i];
+            let mut matched = false;
+            while !matched && next_idx < messages_expected.len() {
+                if msg.data == messages_expected[next_idx].data {
+                    matched = true;
+                } else {
+                    next_idx += 1;
+                }
+            }
+            if !matched {
+                return Err(format!(
+                    "Order violation: {} after {}",
+                    msg.data,
+                    &delivered[i - 1].data
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn mc_check_too_deep(state: &McState, depth: u64) -> Result<(), String> {
+    if state.search_depth > depth {
+        Err("too deep".to_owned())
+    } else {
+        Ok(())
+    }
+}
+
+fn mc_prune_number_of_timers(state: &McState, timers_allowed: u64) -> Option<String> {
+    let timers = state
+        .log
+        .iter()
+        .filter(|event| {
+            if let McEvent::TimerFired { .. } = **event {
+                true
+            } else {
+                false
+            }
+        })
+        .count();
+    if timers > timers_allowed as usize {
+        Some("too many fired timers".to_owned())
+    } else {
+        None
+    }
+}
+
+fn mc_prune_number_of_drops(state: &McState, drops_allowed: u64) -> Option<String> {
+    let drops = state
+        .log
+        .iter()
+        .filter(|event| {
+            if let McEvent::MessageDropped { .. } = **event {
+                true
+            } else {
+                false
+            }
+        })
+        .count();
+    if drops > drops_allowed as usize {
+        Some("too many dropped messages".to_owned())
+    } else {
+        None
+    }
+}
+
+fn mc_prune_many_messages_sent(state: &McState, allowed: u64) -> Option<String> {
+    if state.node_states["sender-node"]["sender"].sent_message_count > allowed {
+        Some("too many messages sent from sender".to_owned())
+    } else if state.node_states["receiver-node"]["receiver"].sent_message_count > allowed {
+        Some("too many messages sent from receiver".to_owned())
+    } else {
+        None
+    }
+}
+
+fn test_model_checking_reliable_network(config: &TestConfig) -> TestResult {
+    let mut sys = build_system(config, false);
+    let message_count = 2;
+    let texts = generate_message_texts(&mut sys, message_count);
+    let mut messages = Vec::new();
+    for text in texts {
+        let msg = Message::new("MESSAGE", &format!(r#"{{"text": "{}"}}"#, text));
+        sys.send_local_message("sender", msg.clone());
+        messages.push(msg);
+    }
+    let messages = messages;
+    let config = *config;
+    let mut mc = ModelChecker::new(
+        &sys,
+        Box::new(Dfs::new(
+            Box::new(|state| mc_prune_many_messages_sent(state, 4).or_else(|| mc_prune_number_of_timers(state, 4))),
+            mc_goal(),
+            Box::new(move |state| {
+                mc_check_too_deep(state, 20)?;
+                mc_check_received_messages(state, &messages, &config)
+            }),
+            None,
+            dslab_mp::mc::strategy::ExecutionMode::Debug,
+        )),
+    );
+    let res = mc.run();
+    assume!(
+        res.is_ok(),
+        format!("model checher found error: {}", res.as_ref().err().unwrap())
+    )?;
+    println!("{:?}", res.unwrap());
+    Ok(true)
+}
+
+fn test_model_checking_unreliable_network(config: &TestConfig) -> TestResult {
+    let mut sys = build_system(config, false);
+    sys.network().set_drop_rate(0.1);
+    let message_count = 2;
+    let texts = generate_message_texts(&mut sys, message_count);
+    let mut messages = Vec::new();
+    for text in texts {
+        let msg = Message::new("MESSAGE", &format!(r#"{{"text": "{}"}}"#, text));
+        sys.send_local_message("sender", msg.clone());
+        messages.push(msg);
+    }
+    let messages = messages;
+    let config = *config;
+    let mut mc = ModelChecker::new(
+        &sys,
+        Box::new(Dfs::new(
+            Box::new(|state| mc_check_too_deep(state, 5).err()),
+            mc_goal(),
+            Box::new(move |state| mc_check_received_messages(state, &messages, &config)),
+            None,
+            dslab_mp::mc::strategy::ExecutionMode::Debug,
+        )),
+    );
+    let res = mc.run();
+    assume!(
+        res.is_ok(),
+        format!("model checher found error: {}", res.as_ref().err().unwrap())
+    )?;
+    println!("{:?}", res.unwrap());
+    Ok(true)
+}
+
+fn test_model_checking_limit_drop_number(config: &TestConfig) -> TestResult {
+    let mut sys = build_system(config, false);
+    sys.network().set_drop_rate(0.1);
+    let message_count = 2;
+    let texts = generate_message_texts(&mut sys, message_count);
+    let mut messages = Vec::new();
+    for text in texts {
+        let msg = Message::new("MESSAGE", &format!(r#"{{"text": "{}"}}"#, text));
+        sys.send_local_message("sender", msg.clone());
+        messages.push(msg);
+    }
+    let messages = messages;
+    let config = *config;
+    let mut mc = ModelChecker::new(
+        &sys,
+        Box::new(Dfs::new(
+            Box::new(|state| {
+                let num_drops_allowed: u64 = 3;
+                mc_prune_number_of_drops(state, num_drops_allowed).or_else(|| {
+                    mc_prune_many_messages_sent(state, 2 + num_drops_allowed)
+                        .or_else(|| mc_prune_number_of_timers(state, 4))
+                })
+            }),
+            mc_goal(),
+            Box::new(move |state| mc_check_received_messages(state, &messages, &config)),
+            None,
+            dslab_mp::mc::strategy::ExecutionMode::Debug,
+        )),
+    );
+    let res = mc.run();
+    assume!(
+        res.is_ok(),
+        format!("model checher found error: {}", res.as_ref().err().unwrap())
+    )?;
+    println!("{:?}", res.unwrap());
+    Ok(true)
+}
+
 fn test_overhead(config: &TestConfig, guarantee: &str, faulty: bool) -> TestResult {
     for message_count in [100, 500, 1000] {
         let mut sys = build_system(config, true);
@@ -440,6 +679,21 @@ fn main() {
         if args.monkeys > 0 {
             tests.add("[AT MOST ONCE] CHAOS MONKEY", test_chaos_monkey, config);
         }
+        tests.add(
+            "[AT MOST ONCE] MODEL CHECKING",
+            test_model_checking_reliable_network,
+            config,
+        );
+        tests.add(
+            "[AT MOST ONCE] MODEL CHECKING UNRELIABLE",
+            test_model_checking_unreliable_network,
+            config,
+        );
+        tests.add(
+            "[AT MOST ONCE] MODEL CHECKING HALF-RELIABLE",
+            test_model_checking_limit_drop_number,
+            config,
+        );
         if args.overhead {
             config.reliable = true;
             tests.add(
@@ -468,6 +722,21 @@ fn main() {
         tests.add("[AT LEAST ONCE] DUPLICATED", test_duplicated, config);
         tests.add("[AT LEAST ONCE] DELAYED+DUPLICATED", test_delayed_duplicated, config);
         tests.add("[AT LEAST ONCE] DROPPED", test_dropped, config);
+        tests.add(
+            "[AT LEAST ONCE] MODEL CHECKING",
+            test_model_checking_reliable_network,
+            config,
+        );
+        tests.add(
+            "[AT LEAST ONCE] MODEL CHECKING UNRELIABLE",
+            test_model_checking_unreliable_network,
+            config,
+        );
+        tests.add(
+            "[AT LEAST ONCE] MODEL CHECKING HALF-RELIABLE",
+            test_model_checking_limit_drop_number,
+            config,
+        );
         if args.monkeys > 0 {
             tests.add("[AT LEAST ONCE] CHAOS MONKEY", test_chaos_monkey, config);
         }
@@ -497,6 +766,21 @@ fn main() {
         tests.add("[EXACTLY ONCE] DUPLICATED", test_duplicated, config);
         tests.add("[EXACTLY ONCE] DELAYED+DUPLICATED", test_delayed_duplicated, config);
         tests.add("[EXACTLY ONCE] DROPPED", test_dropped, config);
+        tests.add(
+            "[EXACTLY ONCE] MODEL CHECKING",
+            test_model_checking_reliable_network,
+            config,
+        );
+        tests.add(
+            "[EXACTLY ONCE] MODEL CHECKING UNRELIABLE",
+            test_model_checking_unreliable_network,
+            config,
+        );
+        tests.add(
+            "[EXACTLY ONCE] MODEL CHECKING HALF-RELIABLE",
+            test_model_checking_limit_drop_number,
+            config,
+        );
         if args.monkeys > 0 {
             tests.add("[EXACTLY ONCE] CHAOS MONKEY", test_chaos_monkey, config);
         }
@@ -535,6 +819,21 @@ fn main() {
             config,
         );
         tests.add("[EXACTLY ONCE ORDERED] DROPPED", test_dropped, config);
+        tests.add(
+            "[EXACTLY ONCE ORDERED] MODEL CHECKING",
+            test_model_checking_reliable_network,
+            config,
+        );
+        tests.add(
+            "[EXACTLY ONCE ORDERED] MODEL CHECKING UNRELIABLE",
+            test_model_checking_unreliable_network,
+            config,
+        );
+        tests.add(
+            "[EXACTLY ONCE ORDERED] MODEL CHECKING HALF-RELIABLE",
+            test_model_checking_limit_drop_number,
+            config,
+        );
         if args.monkeys > 0 {
             tests.add("[EXACTLY ONCE ORDERED] CHAOS MONKEY", test_chaos_monkey, config);
         }
