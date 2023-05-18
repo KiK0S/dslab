@@ -1,7 +1,6 @@
 mod basic;
 mod retry;
 
-
 use std::borrow::BorrowMut;
 use std::collections::HashSet;
 use std::env;
@@ -194,7 +193,7 @@ fn mc_goal<'a>() -> Box<dyn Fn(&McState) -> Option<String> + 'a> {
             None
         }
     })
-} 
+}
 
 fn mc_check_received_messages(state: &McState, messages_expected: &HashSet<String>) -> Result<(), String> {
     let mut messages_got = HashSet::<String>::default();
@@ -218,13 +217,17 @@ fn mc_check_too_deep(state: &McState, depth: u64) -> Result<(), String> {
 }
 
 fn mc_prune_number_of_drops(state: &McState, drops_allowed: u64) -> Option<String> {
-    let drops = state.log.iter().filter(|event| 
-        if let McEvent::MessageDropped{..} = **event {
-            true
-        } else {
-            false
-        }
-    ).count();
+    let drops = state
+        .log
+        .iter()
+        .filter(|event| {
+            if let McEvent::MessageDropped { .. } = **event {
+                true
+            } else {
+                false
+            }
+        })
+        .count();
     if drops > drops_allowed as usize {
         Some("too many dropped messages".to_owned())
     } else {
@@ -249,19 +252,20 @@ fn test_mc_reliable_network(config: &TestConfig) -> TestResult {
     let messages_expected = HashSet::<String>::from_iter([data.clone(), data2.clone()]);
     system.send_local_message("client", Message::new("PING", &data.clone()));
     system.send_local_message("client", Message::new("PING", &data2.clone()));
-    let mut mc = ModelChecker::new(&system, Box::new(Dfs::new(
-        Box::new(|state|{
-            mc_prune_many_messages_sent(state, 4)
-        }),        
-        mc_goal(),
-        Box::new(|state|{
-            mc_check_received_messages(state, &messages_expected)?;
-            mc_check_too_deep(state, 20)?;
-            Ok(())
-        }),
-        None,
-     dslab_mp::mc::strategy::ExecutionMode::Debug,
-    )));
+    let mut mc = ModelChecker::new(
+        &system,
+        Box::new(Dfs::new(
+            Box::new(|state| mc_prune_many_messages_sent(state, 4)),
+            mc_goal(),
+            Box::new(|state| {
+                mc_check_received_messages(state, &messages_expected)?;
+                mc_check_too_deep(state, 20)?;
+                Ok(())
+            }),
+            None,
+            dslab_mp::mc::strategy::ExecutionMode::Debug,
+        )),
+    );
     let res = mc.run();
     assume!(
         res.is_ok(),
@@ -279,16 +283,19 @@ fn test_mc_unreliable_network(config: &TestConfig) -> TestResult {
     system.send_local_message("client", Message::new("PING", &data.clone()));
     system.send_local_message("client", Message::new("PING", &data2.clone()));
     system.network().borrow_mut().set_drop_rate(0.3);
-    let mut mc = ModelChecker::new(&system, Box::new(Dfs::new(
-        Box::new(|state| {
-            mc_check_too_deep(state, 7).err()
-        }),
-        mc_goal(),
-        Box::new(|state|{
-            mc_check_received_messages(state, &messages_expected)?;
-            Ok(())
-        }),None, dslab_mp::mc::strategy::ExecutionMode::Debug,
-    )));
+    let mut mc = ModelChecker::new(
+        &system,
+        Box::new(Dfs::new(
+            Box::new(|state| mc_check_too_deep(state, 7).err()),
+            mc_goal(),
+            Box::new(|state| {
+                mc_check_received_messages(state, &messages_expected)?;
+                Ok(())
+            }),
+            None,
+            dslab_mp::mc::strategy::ExecutionMode::Debug,
+        )),
+    );
     let res = mc.run();
     assume!(
         res.is_ok(),
@@ -306,20 +313,24 @@ fn test_mc_limited_drops(config: &TestConfig) -> TestResult {
     system.send_local_message("client", Message::new("PING", &data.clone()));
     system.send_local_message("client", Message::new("PING", &data2.clone()));
     system.network().borrow_mut().set_drop_rate(0.3);
-    let mut mc = ModelChecker::new(&system, Box::new(Dfs::new(
-        Box::new(|state| {
-            let num_drops_allowed = 3;
-            mc_prune_number_of_drops(state, num_drops_allowed).or_else(||
-                mc_prune_many_messages_sent(state, num_drops_allowed + 2)
-            )
-        }),
-        mc_goal(),
-        Box::new(|state|{
-            mc_check_received_messages(state, &messages_expected)?;
-            mc_check_too_deep(state, 20)?;
-            Ok(())
-        }),None, dslab_mp::mc::strategy::ExecutionMode::Debug,
-    )));
+    let mut mc = ModelChecker::new(
+        &system,
+        Box::new(Dfs::new(
+            Box::new(|state| {
+                let num_drops_allowed = 3;
+                mc_prune_number_of_drops(state, num_drops_allowed)
+                    .or_else(|| mc_prune_many_messages_sent(state, num_drops_allowed + 2))
+            }),
+            mc_goal(),
+            Box::new(|state| {
+                mc_check_received_messages(state, &messages_expected)?;
+                mc_check_too_deep(state, 20)?;
+                Ok(())
+            }),
+            None,
+            dslab_mp::mc::strategy::ExecutionMode::Debug,
+        )),
+    );
     let res = mc.run();
     assume!(
         res.is_ok(),
@@ -372,7 +383,11 @@ fn main() {
     tests.add("DROP PING 2", test_drop_ping2, config.clone());
     tests.add("DROP PONG 2", test_drop_pong2, config.clone());
     tests.add("10 UNIQUE RESULTS", test_10results_unique, config.clone());
-    tests.add("10 UNIQUE RESULTS UNRELIABLE", test_10results_unique_unreliable, config.clone());
+    tests.add(
+        "10 UNIQUE RESULTS UNRELIABLE",
+        test_10results_unique_unreliable,
+        config.clone(),
+    );
     tests.add("MODEL CHECKING", test_mc_reliable_network, config.clone());
     tests.add("MODEL CHECKING UNRELIABLE", test_mc_unreliable_network, config.clone());
     tests.add("MODEL CHECKING UNRELIABLE WITH LIMITS", test_mc_limited_drops, config);
