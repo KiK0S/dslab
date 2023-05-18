@@ -2,17 +2,17 @@ use std::cmp::min;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::hash::{Hasher, Hash};
+use std::hash::{Hash, Hasher};
 use std::io::Write;
 
 use assertables::{assume, assume_eq};
 use clap::Parser;
 use dslab_mp::mc::events::McEvent;
-use dslab_mp::mc::strategies::random_walk::RandomWalk;
-use dslab_mp::mc::system::McState;
 use dslab_mp::mc::model_checker::ModelChecker;
 use dslab_mp::mc::strategies::dfs::Dfs;
+use dslab_mp::mc::strategies::random_walk::RandomWalk;
 use dslab_mp::mc::strategy::McResult;
+use dslab_mp::mc::system::McState;
 use env_logger::Builder;
 use log::LevelFilter;
 use rand::prelude::*;
@@ -640,16 +640,19 @@ fn mc_invariant_ok<'a>() -> Box<dyn Fn(&McState) -> Result<(), String> + 'a> {
     Box::new(|_| Ok(()))
 }
 
-fn mc_collect_responses<'a>(procs: &'a Vec<String>, groups: &'a Vec<&HashSet<String>>) -> Box<dyn Fn(&McState) -> bool + 'a> {
-    Box::new(|state|{
+fn mc_collect_responses<'a>(
+    procs: &'a Vec<String>,
+    groups: &'a Vec<&HashSet<String>>,
+) -> Box<dyn Fn(&McState) -> bool + 'a> {
+    Box::new(|state| {
         let mut correct_answers = 0;
         for node in state.node_states.keys() {
             if let Some(msg) = state.node_states[node][node].local_outbox.iter().next() {
                 let data: MembersMessage = serde_json::from_str(&msg.data).unwrap();
                 let members = HashSet::from_iter(data.members.into_iter());
                 let ground_truth = groups.iter().find(|g| g.contains(node)).unwrap();
-                let mut correct = (*ground_truth).difference(&members).any(|_|{true}) == false;
-                correct &= members.difference(&ground_truth).any(|_|{true}) == false;
+                let mut correct = (*ground_truth).difference(&members).any(|_| true) == false;
+                correct &= members.difference(&ground_truth).any(|_| true) == false;
                 if correct {
                     correct_answers += 1;
                 }
@@ -684,8 +687,8 @@ fn mc_invariant_check_stabilized(state: &McState, groups: &Vec<&HashSet<String>>
             let data: MembersMessage = serde_json::from_str(&msg.data).unwrap();
             let members = HashSet::from_iter(data.members.into_iter());
             let ground_truth = groups.iter().find(|g| g.contains(node)).unwrap();
-            let mut correct = (*ground_truth).difference(&members).any(|_|{true}) == false;
-            correct &= members.difference(&ground_truth).any(|_|{true}) == false;
+            let mut correct = (*ground_truth).difference(&members).any(|_| true) == false;
+            correct &= members.difference(&ground_truth).any(|_| true) == false;
             if !correct {
                 return Err("still not stabilized".to_owned());
             }
@@ -696,9 +699,8 @@ fn mc_invariant_check_stabilized(state: &McState, groups: &Vec<&HashSet<String>>
 
 fn mc_prune_exploration<'a>() -> Box<dyn Fn(&McState) -> Option<String> + 'a> {
     Box::new(move |state| {
-        mc_prune_messages(state, 5 as usize, 8 as usize).or_else(||
-        mc_prune_timers(state, 10 as usize, 18 as usize).or_else(||
-        mc_prune_repetitions(state, 3)))
+        mc_prune_messages(state, 5 as usize, 8 as usize)
+            .or_else(|| mc_prune_timers(state, 10 as usize, 18 as usize).or_else(|| mc_prune_repetitions(state, 3)))
     })
 }
 
@@ -715,12 +717,16 @@ fn mc_prune_timers(state: &McState, for_a_proc: usize, total: usize) -> Option<S
         }
     }
 
-    if state.log.iter().filter(|event| 
-        match *event {
+    if state
+        .log
+        .iter()
+        .filter(|event| match *event {
             McEvent::TimerFired { .. } => true,
-            _ => false
-        }
-    ).count() > total {
+            _ => false,
+        })
+        .count()
+        > total
+    {
         return Some("too many timers in total".to_owned());
     }
     None
@@ -754,13 +760,17 @@ fn mc_prune_messages(state: &McState, for_a_proc: usize, total: usize) -> Option
         }
     }
 
-    if state.log.iter().filter(|event| 
-        match *event {
+    if state
+        .log
+        .iter()
+        .filter(|event| match *event {
             McEvent::MessageReceived { .. } => true,
             McEvent::MessageDropped { .. } => true,
-            _ => false
-        }
-    ).count() > total {
+            _ => false,
+        })
+        .count()
+        > total
+    {
         return Some("too many messages in total".to_owned());
     }
     None
@@ -776,7 +786,10 @@ fn mc_goal_get_response<'a>(node: &'a str) -> Box<dyn Fn(&McState) -> Option<Str
     })
 }
 
-fn mc_goal_get_responses<'a>(procs: &'a Vec<String>, groups: &'a Vec<&HashSet<String>>) -> Box<dyn Fn(&McState) -> Option<String> + 'a> {
+fn mc_goal_get_responses<'a>(
+    procs: &'a Vec<String>,
+    groups: &'a Vec<&HashSet<String>>,
+) -> Box<dyn Fn(&McState) -> Option<String> + 'a> {
     Box::new(|state| {
         let mut correct_answers = 0;
         for node in state.node_states.keys() {
@@ -784,7 +797,7 @@ fn mc_goal_get_responses<'a>(procs: &'a Vec<String>, groups: &'a Vec<&HashSet<St
                 let data: MembersMessage = serde_json::from_str(&msg.data).unwrap();
                 let members = HashSet::from_iter(data.members.into_iter());
                 let ground_truth = groups.iter().find(|g| g.contains(node)).unwrap();
-                let correct = (*ground_truth).difference(&members).any(|_|{true}) == false;
+                let correct = (*ground_truth).difference(&members).any(|_| true) == false;
                 if correct {
                     correct_answers += 1;
                 }
@@ -800,16 +813,23 @@ fn mc_goal_get_responses<'a>(procs: &'a Vec<String>, groups: &'a Vec<&HashSet<St
 
 fn get_n_start_states(start_states: HashSet<McState>, mut n: usize) -> HashSet<McState> {
     n = min(n, start_states.len());
-    let mut hashed = start_states.into_iter().map(|state| {
-        let mut hasher = DefaultHasher::default();
-        state.hash(&mut hasher);
-        (hasher.finish(), state)
-    }).collect::<Vec<(u64, McState)>>();
+    let mut hashed = start_states
+        .into_iter()
+        .map(|state| {
+            let mut hasher = DefaultHasher::default();
+            state.hash(&mut hasher);
+            (hasher.finish(), state)
+        })
+        .collect::<Vec<(u64, McState)>>();
     hashed.sort_by_key(|(a, b)| *a);
     HashSet::from_iter(hashed.split_at(n).0.into_iter().map(|(a, b)| b.clone()))
 }
 
-fn mc_stabilize(sys: &mut System, groups: Vec<&HashSet<String>>, start_states: Option<HashSet<McState>>) -> Result<McResult, String> {
+fn mc_stabilize(
+    sys: &mut System,
+    groups: Vec<&HashSet<String>>,
+    start_states: Option<HashSet<McState>>,
+) -> Result<McResult, String> {
     let procs = sys.process_names();
     let old_delivery_delay = sys.network().max_delay();
     sys.network().set_delay(0.0);
@@ -817,32 +837,39 @@ fn mc_stabilize(sys: &mut System, groups: Vec<&HashSet<String>>, start_states: O
         &sys,
         Box::new(Dfs::new(
             Box::new(|state| {
-                mc_prune_timers(state, 5, 10).or_else(||
-                mc_invariant_depth(state, 15, "too deep").err().or_else(||
-                mc_prune_repetitions(state, 2)
-                ))
-            }),    
+                mc_prune_timers(state, 5, 10).or_else(|| {
+                    mc_invariant_depth(state, 15, "too deep")
+                        .err()
+                        .or_else(|| mc_prune_repetitions(state, 2))
+                })
+            }),
             Box::new(|state| {
-                mc_invariant_depth(state, 20, "enough steps").err().or_else(||
+                mc_invariant_depth(state, 20, "enough steps").err().or_else(|| {
                     if state.events.available_events_num() == 0 {
                         Some("nothing left to do".to_owned())
                     } else {
                         None
                     }
-                )
+                })
             }),
             Box::new(mc_invariant_ok()),
             Some(Box::new(|state| {
-                if procs.iter().all(|proc| state.node_states[proc][proc].received_message_count > 2) {
+                if procs
+                    .iter()
+                    .all(|proc| state.node_states[proc][proc].received_message_count > 2)
+                {
                     return true;
                 }
-                mc_invariant_depth(state, 15, "too deep").err().or_else(|| {
-                    if state.events.available_events_num() == 0 {
-                        Some("nothing left to do".to_owned())
-                    } else {
-                        None
-                    }
-                }).is_some()
+                mc_invariant_depth(state, 15, "too deep")
+                    .err()
+                    .or_else(|| {
+                        if state.events.available_events_num() == 0 {
+                            Some("nothing left to do".to_owned())
+                        } else {
+                            None
+                        }
+                    })
+                    .is_some()
             })),
             dslab_mp::mc::strategy::ExecutionMode::Debug,
         )),
@@ -856,21 +883,26 @@ fn mc_stabilize(sys: &mut System, groups: Vec<&HashSet<String>>, start_states: O
             mc.set_state(start_state);
             let cur_res = mc.run();
             if cur_res.is_err() {
-                return Err(format!("model checher found error: {}", cur_res.as_ref().err().unwrap()));
+                return Err(format!(
+                    "model checher found error: {}",
+                    cur_res.as_ref().err().unwrap()
+                ));
             }
             let cur_res = cur_res.unwrap();
             res.combine(cur_res);
         }
-
     } else {
         let cur_res = mc.run();
         if cur_res.is_err() {
-            return Err(format!("model checher found error: {}", cur_res.as_ref().err().unwrap()));
+            return Err(format!(
+                "model checher found error: {}",
+                cur_res.as_ref().err().unwrap()
+            ));
         }
         res = cur_res.unwrap();
     }
     println!("got {} states", res.clone().collected.len());
-    println!("{:?}", res.clone().summary);    
+    println!("{:?}", res.clone().summary);
     sys.network().set_delay(old_delivery_delay);
     let res = mc_collect_members(sys, res.collected, &procs, &groups)?;
     if res.collected.is_empty() {
@@ -879,8 +911,12 @@ fn mc_stabilize(sys: &mut System, groups: Vec<&HashSet<String>>, start_states: O
     Ok(res)
 }
 
-
-fn mc_collect_members(sys: &mut System, mut collected: HashSet<McState>, procs: &Vec<String>, groups: &Vec<&HashSet<String>>) -> Result<McResult, String> {
+fn mc_collect_members(
+    sys: &mut System,
+    mut collected: HashSet<McState>,
+    procs: &Vec<String>,
+    groups: &Vec<&HashSet<String>>,
+) -> Result<McResult, String> {
     collected = get_n_start_states(collected, 20);
     let mut mc = ModelChecker::new(
         &sys,
@@ -900,7 +936,10 @@ fn mc_collect_members(sys: &mut System, mut collected: HashSet<McState>, procs: 
     for state in collected {
         mc.set_state(state);
         for node in procs.iter() {
-            mc.apply_event(dslab_mp::mc::events::McEvent::LocalMessageReceived { msg: Message::json("GET_MEMBERS", &GetMembersMessage{}), dest: node.clone() });
+            mc.apply_event(dslab_mp::mc::events::McEvent::LocalMessageReceived {
+                msg: Message::json("GET_MEMBERS", &GetMembersMessage {}),
+                dest: node.clone(),
+            });
         }
         let res = mc.run();
         if res.is_err() {
@@ -912,10 +951,13 @@ fn mc_collect_members(sys: &mut System, mut collected: HashSet<McState>, procs: 
     Ok(combined)
 }
 
-
-fn mc_explore(sys: &mut System, groups: Vec<&HashSet<String>>, start_states: Option<HashSet<McState>>) -> Result<McResult, String> {
+fn mc_explore(
+    sys: &mut System,
+    groups: Vec<&HashSet<String>>,
+    start_states: Option<HashSet<McState>>,
+) -> Result<McResult, String> {
     let procs = sys.process_names();
-    
+
     // generally insta_mode would be bad but we know messages will be dropped
     let old_delivery_delay = sys.network().max_delay();
     sys.network().set_delay(0.0);
@@ -923,8 +965,8 @@ fn mc_explore(sys: &mut System, groups: Vec<&HashSet<String>>, start_states: Opt
         &sys,
         Box::new(RandomWalk::new(
             mc_prune_exploration(),
-           Box::new(|state| {
-                mc_invariant_depth(state, 1030, "enough steps").err().or_else(||{
+            Box::new(|state| {
+                mc_invariant_depth(state, 1030, "enough steps").err().or_else(|| {
                     if state.events.available_events_num() == 0 {
                         Some("finished".to_owned())
                     } else {
@@ -934,12 +976,11 @@ fn mc_explore(sys: &mut System, groups: Vec<&HashSet<String>>, start_states: Opt
             }),
             Box::new(mc_invariant_ok()),
             Some(Box::new(|state| {
-                mc_invariant_depth(state, 1030, "enough steps").is_err() ||
-                state.events.available_events_num() == 0
+                mc_invariant_depth(state, 1030, "enough steps").is_err() || state.events.available_events_num() == 0
             })),
             dslab_mp::mc::strategy::ExecutionMode::Debug,
             5000,
-            1020
+            1020,
         )),
     );
     let mut res = McResult::default();
@@ -958,21 +999,26 @@ fn mc_explore(sys: &mut System, groups: Vec<&HashSet<String>>, start_states: Opt
             mc.set_state_same_depth(start_state);
             let cur_res = mc.run();
             if cur_res.is_err() {
-                return Err(format!("model checher found error: {}", cur_res.as_ref().err().unwrap()));
+                return Err(format!(
+                    "model checher found error: {}",
+                    cur_res.as_ref().err().unwrap()
+                ));
             }
             let cur_res = cur_res.unwrap();
             res.combine(cur_res);
         }
-
     } else {
         let cur_res = mc.run();
         if cur_res.is_err() {
-            return Err(format!("model checher found error: {}", cur_res.as_ref().err().unwrap()));
+            return Err(format!(
+                "model checher found error: {}",
+                cur_res.as_ref().err().unwrap()
+            ));
         }
         res = cur_res.unwrap();
     }
     println!("got {} states", res.clone().collected.len());
-    println!("{:?}", res.clone().summary);    
+    println!("{:?}", res.clone().summary);
     sys.network().set_delay(old_delivery_delay);
     let res = mc_collect_members(sys, res.collected, &procs, &groups)?;
     if res.collected.is_empty() {
@@ -985,15 +1031,13 @@ fn test_mc_local_answer(config: &TestConfig) -> TestResult {
     let mut sys = build_system(config);
     let group = sys.process_names();
     sys.send_local_message(&group[0], Message::json("JOIN", &JoinMessage { seed: &group[0] }));
-    sys.send_local_message(&group[0], Message::json("GET_MEMBERS", &GetMembersMessage { }));
+    sys.send_local_message(&group[0], Message::json("GET_MEMBERS", &GetMembersMessage {}));
     let mut mc = ModelChecker::new(
         &sys,
         Box::new(Dfs::new(
             mc_prune_none(),
             mc_goal_get_response(&group[0]),
-            Box::new(move |state| {
-                mc_invariant_depth(state, 5, "too_deep")
-            }),
+            Box::new(move |state| mc_invariant_depth(state, 5, "too_deep")),
             None,
             dslab_mp::mc::strategy::ExecutionMode::Debug,
         )),
@@ -1033,10 +1077,21 @@ fn test_mc_partition(config: &TestConfig) -> TestResult {
     let states_group = mc_stabilize(&mut sys, vec![&HashSet::from_iter(group.clone().into_iter())], None)?;
     sys.network().make_partition(&[&group[0]], &[&group[1]]);
     let start_states = get_n_start_states(states_group.collected, 1);
-    let states_partition = mc_explore(&mut sys, vec![&HashSet::from_iter(vec![group[0].clone()].into_iter()),&HashSet::from_iter(vec![group[1].clone()].into_iter())], Some(start_states))?;
+    let states_partition = mc_explore(
+        &mut sys,
+        vec![
+            &HashSet::from_iter(vec![group[0].clone()].into_iter()),
+            &HashSet::from_iter(vec![group[1].clone()].into_iter()),
+        ],
+        Some(start_states),
+    )?;
     sys.network().reset_network();
     let start_states = get_n_start_states(states_partition.collected, 1);
-    mc_stabilize(&mut sys, vec![&HashSet::from_iter(group.into_iter())], Some(start_states))?;
+    mc_stabilize(
+        &mut sys,
+        vec![&HashSet::from_iter(group.into_iter())],
+        Some(start_states),
+    )?;
     Ok(true)
 }
 
@@ -1126,7 +1181,7 @@ fn main() {
 
     let mc_config = TestConfig {
         process_factory: &process_factory,
-        process_count: 2    ,
+        process_count: 2,
         seed: args.seed,
     };
     tests.add("MC LOCAL GET_MEMBERS", test_mc_local_answer, mc_config.clone());

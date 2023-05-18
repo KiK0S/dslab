@@ -5,7 +5,9 @@ use std::collections::HashSet;
 use colored::*;
 use rand::seq::IteratorRandom;
 
-use crate::mc::strategy::{CollectFn, ExecutionMode, GoalFn, InvariantFn, McSummary, PruneFn, Strategy, VisitedStates, McResult};
+use crate::mc::strategy::{
+    CollectFn, ExecutionMode, GoalFn, InvariantFn, McResult, McSummary, PruneFn, Strategy, VisitedStates,
+};
 use crate::mc::system::{McState, McSystem};
 use crate::util::t;
 
@@ -76,7 +78,10 @@ impl<'a> Strategy for RandomWalk<'a> {
         for _ in 0..self.walks {
             self.walk(system, state.clone())?;
         }
-        Ok(McResult { summary: self.summary.clone(), collected: self.collected.clone() })
+        Ok(McResult {
+            summary: self.summary.clone(),
+            collected: self.collected.clone(),
+        })
     }
 
     fn search_step_impl(&mut self, system: &mut McSystem, state: McState) -> Result<(), String> {

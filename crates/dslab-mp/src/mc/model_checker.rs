@@ -83,7 +83,6 @@ impl<'a> ModelChecker<'a> {
         self.system.set_state(state);
     }
 
-
     pub fn apply_event(&mut self, event: McEvent) {
         self.system.apply_event(event);
     }
