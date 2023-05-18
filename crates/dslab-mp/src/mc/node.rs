@@ -10,9 +10,9 @@ use crate::message::Message;
 use crate::node::{EventLogEntry, ProcessEntry, ProcessEvent, TimerBehavior};
 use crate::process::ProcessState;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct ProcessEntryState {
-    pub proc_state: Box<dyn ProcessState>,
+    pub proc_state: Rc<dyn ProcessState>,
     pub event_log: Vec<EventLogEntry>,
     pub local_outbox: Vec<Message>,
     pub pending_timers: HashMap<String, u64>,
@@ -72,7 +72,7 @@ impl McNode {
         Self { processes, net }
     }
 
-    pub fn on_message_received(&mut self, proc: String, msg: Message, from: String) -> Vec<McEvent> {
+    pub fn on_message_received(&mut self, proc: String, msg: Message, from: String, depth: u64) -> Vec<McEvent> {
         let proc_entry = self.processes.get_mut(&proc).unwrap();
         proc_entry.event_log.push(EventLogEntry::new(
             0.0,
@@ -84,17 +84,24 @@ impl McNode {
         ));
         proc_entry.received_message_count += 1;
 
-        let mut proc_ctx = Context::new(proc.to_string(), None, 0.0);
+        let mut proc_ctx = Context::new(proc.to_string(), None, depth as f64);
         proc_entry.proc_impl.on_message(msg, from, &mut proc_ctx);
         self.handle_process_actions(proc, 0.0, proc_ctx.actions())
     }
 
-    pub fn on_timer_fired(&mut self, proc: String, timer: String) -> Vec<McEvent> {
+    pub fn on_timer_fired(&mut self, proc: String, timer: String, depth: u64) -> Vec<McEvent> {
         let proc_entry = self.processes.get_mut(&proc).unwrap();
         proc_entry.pending_timers.remove(&timer);
 
-        let mut proc_ctx = Context::new(proc.to_string(), None, 0.0);
+        let mut proc_ctx = Context::new(proc.to_string(), None, depth as f64);
         proc_entry.proc_impl.on_timer(timer, &mut proc_ctx);
+        self.handle_process_actions(proc, 0.0, proc_ctx.actions())
+    }
+
+    pub fn on_local_message_received(&mut self, proc: String, msg: Message, depth: u64) -> Vec<McEvent> {
+        let proc_entry = self.processes.get_mut(&proc).unwrap();
+        let mut proc_ctx = Context::new(proc.to_string(), None, depth as f64);
+        proc_entry.proc_impl.on_local_message(msg, &mut proc_ctx);
         self.handle_process_actions(proc, 0.0, proc_ctx.actions())
     }
 
@@ -134,7 +141,12 @@ impl McNode {
                         };
                         new_events.push(event);
                         // event_id is 0 since it is not used in model checking
-                        proc_entry.pending_timers.insert(name, 0);
+                        proc_entry.pending_timers.insert(name.clone(), 0);
+                        let proc_copy = proc.clone();
+                        new_events.retain(|event| match event {
+                            McEvent::TimerCancelled { proc, timer } if *proc == proc_copy && *timer == name => false,
+                            _ => true,
+                        });
                     }
                 }
                 ProcessEvent::TimerCancelled { name } => {

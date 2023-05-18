@@ -1,38 +1,53 @@
 //! Implementation of model checking BFS search strategy.
 
-use std::collections::VecDeque;
+use colored::*;
+use std::collections::{HashSet, VecDeque};
 
-use crate::mc::strategy::{ExecutionMode, GoalFn, InvariantFn, McSummary, PruneFn, Strategy, VisitedStates};
+use crate::mc::strategy::{
+    CollectFn, ExecutionMode, GoalFn, InvariantFn, McResult, McSummary, PruneFn, Strategy, VisitedStates,
+};
 use crate::mc::system::{McState, McSystem};
 
+use crate::util::t;
+
 /// The search strategy based on the [BFS](https://en.wikipedia.org/wiki/Breadth-first_search) algorithm.
-pub struct Bfs {
-    prune: PruneFn,
-    goal: GoalFn,
-    invariant: InvariantFn,
+pub struct Bfs<'a> {
+    prune: PruneFn<'a>,
+    goal: GoalFn<'a>,
+    invariant: InvariantFn<'a>,
+    collect: Option<CollectFn<'a>>,
     states_queue: VecDeque<McState>,
     execution_mode: ExecutionMode,
     summary: McSummary,
     visited: VisitedStates,
+    collected: HashSet<McState>,
 }
 
-impl Bfs {
+impl<'a> Bfs<'a> {
     /// Creates a new Bfs instance with specified user-defined functions and execution mode.
-    pub fn new(prune: PruneFn, goal: GoalFn, invariant: InvariantFn, execution_mode: ExecutionMode) -> Self {
+    pub fn new(
+        prune: PruneFn<'a>,
+        goal: GoalFn<'a>,
+        invariant: InvariantFn<'a>,
+        collect: Option<CollectFn<'a>>,
+        execution_mode: ExecutionMode,
+    ) -> Self {
         let visited = Self::initialize_visited(&execution_mode);
         Self {
             prune,
             goal,
             invariant,
+            collect,
             states_queue: VecDeque::new(),
             execution_mode,
             summary: McSummary::default(),
             visited,
+            collected: HashSet::new(),
         }
     }
 }
 
-impl Bfs {
+impl<'a> Bfs<'a> {
     fn bfs(&mut self, system: &mut McSystem) -> Result<(), String> {
         // Start search from initial state
         self.states_queue.push_back(system.get_state());
@@ -61,11 +76,17 @@ impl Bfs {
     }
 }
 
-impl Strategy for Bfs {
-    fn run(&mut self, system: &mut McSystem) -> Result<McSummary, String> {
+impl<'a> Strategy for Bfs<'a> {
+    fn run(&mut self, system: &mut McSystem) -> Result<McResult, String> {
+        if self.execution_mode == ExecutionMode::Default {
+            t!(format!("RUNNING MODEL CHECKING THROUGH EVERY POSSIBLE EXECUTION PATH").yellow())
+        }
         let res = self.bfs(system);
         match res {
-            Ok(()) => Ok(self.summary.clone()),
+            Ok(()) => Ok(McResult {
+                summary: self.summary.clone(),
+                collected: self.collected.clone(),
+            }),
             Err(err) => Err(err),
         }
     }
@@ -93,6 +114,14 @@ impl Strategy for Bfs {
 
     fn invariant(&self) -> &InvariantFn {
         &self.invariant
+    }
+
+    fn collect(&self) -> &Option<CollectFn> {
+        &self.collect
+    }
+
+    fn collected(&mut self) -> &mut HashSet<McState> {
+        &mut self.collected
     }
 
     fn summary(&mut self) -> &mut McSummary {

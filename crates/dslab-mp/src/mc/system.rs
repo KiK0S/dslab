@@ -1,4 +1,5 @@
 use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::hash::{Hash, Hasher};
 use std::rc::Rc;
@@ -8,19 +9,21 @@ use crate::mc::network::McNetwork;
 use crate::mc::node::{McNode, McNodeState};
 use crate::mc::pending_events::PendingEvents;
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct McState {
     pub node_states: BTreeMap<String, McNodeState>,
     pub events: PendingEvents,
     pub search_depth: u64,
+    pub log: Vec<McEvent>,
 }
 
 impl McState {
-    pub fn new(events: PendingEvents, search_depth: u64) -> Self {
+    pub fn new(events: PendingEvents, search_depth: u64, log: Vec<McEvent>) -> Self {
         Self {
             node_states: BTreeMap::new(),
             events,
             search_depth,
+            log,
         }
     }
 }
@@ -45,6 +48,7 @@ pub struct McSystem {
     net: Rc<RefCell<McNetwork>>,
     pub(crate) events: PendingEvents,
     search_depth: u64,
+    pub log: Vec<McEvent>,
 }
 
 impl McSystem {
@@ -54,30 +58,76 @@ impl McSystem {
             net,
             events,
             search_depth: 0,
+            log: vec![],
         }
     }
 
     pub fn apply_event(&mut self, event: McEvent) {
         self.search_depth += 1;
-        let new_events = match event {
+        self.log.push(event.clone());
+        let mut new_events = match event {
             McEvent::MessageReceived { msg, src, dest, .. } => {
                 let name = self.net.borrow().get_proc_node(&dest).clone();
-                self.nodes.get_mut(&name).unwrap().on_message_received(dest, msg, src)
+                self.nodes
+                    .get_mut(&name)
+                    .unwrap()
+                    .on_message_received(dest, msg, src, self.search_depth)
             }
             McEvent::TimerFired { proc, timer, .. } => {
                 let name = self.net.borrow().get_proc_node(&proc).clone();
-                self.nodes.get_mut(&name).unwrap().on_timer_fired(proc, timer)
+                self.nodes
+                    .get_mut(&name)
+                    .unwrap()
+                    .on_timer_fired(proc, timer, self.search_depth)
+            }
+            McEvent::LocalMessageReceived { dest, msg } => {
+                let name = self.net.borrow().get_proc_node(&dest).clone();
+                self.nodes
+                    .get_mut(&name)
+                    .unwrap()
+                    .on_local_message_received(dest, msg, self.search_depth)
             }
             _ => vec![],
         };
-
+        new_events.sort_by(|a, b| {
+            let type_a = match a {
+                McEvent::TimerFired { .. } => 1,
+                McEvent::TimerCancelled { .. } => 2,
+                _ => 0,
+            };
+            let type_b = match b {
+                McEvent::TimerFired { .. } => 1,
+                McEvent::TimerCancelled { .. } => 2,
+                _ => 0,
+            };
+            if type_a != type_b {
+                return type_a.cmp(&type_b);
+            }
+            if type_a == 2 {
+                return Ordering::Equal;
+            }
+            if let McEvent::TimerFired {
+                timer_delay: timer_delay_a,
+                ..
+            } = a
+            {
+                if let McEvent::TimerFired {
+                    timer_delay: timer_delay_b,
+                    ..
+                } = b
+                {
+                    return timer_delay_a.cmp(&timer_delay_b);
+                }
+            }
+            return Ordering::Equal;
+        });
         for new_event in new_events {
             self.events.push(new_event);
         }
     }
 
     pub fn get_state(&self) -> McState {
-        let mut state = McState::new(self.events.clone(), self.search_depth);
+        let mut state = McState::new(self.events.clone(), self.search_depth, self.log.clone());
         for (name, node) in &self.nodes {
             state.node_states.insert(name.clone(), node.get_state());
         }
@@ -90,6 +140,7 @@ impl McSystem {
         }
         self.events = state.events;
         self.search_depth = state.search_depth;
+        self.log = state.log;
     }
 
     pub fn available_events(&self) -> BTreeSet<McEventId> {

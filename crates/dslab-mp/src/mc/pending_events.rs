@@ -13,11 +13,12 @@ pub struct PendingEvents {
     directives: BTreeSet<McEventId>,
     resolver: DependencyResolver,
     id_counter: McEventId,
+    pub is_insta: bool,
 }
 
 impl PendingEvents {
     /// Creates a new empty PendingEvents instance.
-    pub fn new() -> Self {
+    pub fn new(is_insta: bool) -> Self {
         PendingEvents {
             events: BTreeMap::default(),
             timer_mapping: BTreeMap::default(),
@@ -25,6 +26,7 @@ impl PendingEvents {
             directives: BTreeSet::default(),
             resolver: DependencyResolver::default(),
             id_counter: 0,
+            is_insta,
         }
     }
 
@@ -39,8 +41,8 @@ impl PendingEvents {
     pub(crate) fn push_with_fixed_id(&mut self, event: McEvent, id: McEventId) -> McEventId {
         assert!(!self.events.contains_key(&id), "event with such id already exists");
         match &event {
-            McEvent::MessageReceived { msg, .. } => {
-                if self.resolver.add_message(msg.clone(), id) {
+            McEvent::MessageReceived { msg, src, dest, .. } => {
+                if self.resolver.add_message(msg.clone(), src.clone(), dest.clone(), id) {
                     self.available_events.insert(id);
                 }
             }
@@ -60,6 +62,10 @@ impl PendingEvents {
             McEvent::MessageDropped { .. } => {
                 self.directives.insert(id);
             }
+            McEvent::LocalMessageReceived { .. } => {
+                // can not happen
+                panic!("local message cant be received from insiders");
+            }
         };
         self.events.insert(id, event);
         id
@@ -75,20 +81,59 @@ impl PendingEvents {
         if let Some(directive) = self.directives.iter().next() {
             BTreeSet::from_iter(vec![*directive])
         } else {
-            self.available_events.clone()
+            if self.is_insta {
+                let res = BTreeSet::from_iter(self.available_events.clone().into_iter().filter(|event_id| {
+                    if let McEvent::TimerFired { .. } = self.events[event_id] {
+                        false
+                    } else {
+                        true
+                    }
+                }));
+                if res.is_empty() {
+                    self.available_events.clone()
+                } else {
+                    res
+                }
+            } else {
+                self.available_events.clone()
+            }
         }
     }
 
     /// Returns the number of currently available events
     pub fn available_events_num(&self) -> usize {
-        self.available_events.len()
+        if let Some(_) = self.directives.iter().next() {
+            return 1;
+        }
+        if self.is_insta {
+            let res = self
+                .available_events
+                .iter()
+                .filter(|event_id| {
+                    if let McEvent::TimerFired { .. } = self.events[event_id] {
+                        false
+                    } else {
+                        true
+                    }
+                })
+                .count();
+            if res == 0 {
+                self.available_events.len()
+            } else {
+                res
+            }
+        } else {
+            self.available_events.len()
+        }
     }
 
     /// Cancels given timer and recalculates available events.
     pub fn cancel_timer(&mut self, proc: String, timer: String) {
         let id = self.timer_mapping.remove(&(proc, timer));
         if let Some(id) = id {
-            self.pop(id);
+            if self.events.contains_key(&id) {
+                self.pop(id);
+            }
         }
     }
 
@@ -101,8 +146,8 @@ impl PendingEvents {
             let unblocked_events = self.resolver.remove_timer(event_id);
             self.available_events.extend(unblocked_events);
         }
-        if let McEvent::MessageReceived { msg, .. } = result.clone() {
-            if let Some(unblocked_event) = self.resolver.remove_message(msg) {
+        if let McEvent::MessageReceived { msg, src, dest, .. } = result.clone() {
+            if let Some(unblocked_event) = self.resolver.remove_message(msg, src, dest) {
                 self.available_events.insert(unblocked_event);
             }
         }
@@ -128,7 +173,7 @@ mod tests {
 
     #[test]
     fn test_dependency_resolver_simple() {
-        let mut pending_events = PendingEvents::new();
+        let mut pending_events = PendingEvents::new(false);
         let mut sequence = Vec::new();
         let mut rev_id = vec![0; 9];
         for node_id in 0..3 {
@@ -161,7 +206,7 @@ mod tests {
 
     #[test]
     fn test_dependency_resolver_pop() {
-        let mut pending_events = PendingEvents::new();
+        let mut pending_events = PendingEvents::new(false);
         let mut sequence = Vec::new();
         let mut rev_id = vec![0; 12];
 

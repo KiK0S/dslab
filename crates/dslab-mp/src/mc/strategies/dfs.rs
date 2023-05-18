@@ -1,34 +1,51 @@
 //! Implementation of model checking DFS search strategy.
 
-use crate::mc::strategy::{ExecutionMode, GoalFn, InvariantFn, McSummary, PruneFn, Strategy, VisitedStates};
+use std::collections::HashSet;
+
+use colored::*;
+
+use crate::mc::strategy::{
+    CollectFn, ExecutionMode, GoalFn, InvariantFn, McResult, McSummary, PruneFn, Strategy, VisitedStates,
+};
 use crate::mc::system::{McState, McSystem};
+use crate::util::t;
 
 /// The search strategy based on the [DFS](https://en.wikipedia.org/wiki/Depth-first_search) algorithm.
-pub struct Dfs {
-    prune: PruneFn,
-    goal: GoalFn,
-    invariant: InvariantFn,
+pub struct Dfs<'a> {
+    prune: PruneFn<'a>,
+    goal: GoalFn<'a>,
+    invariant: InvariantFn<'a>,
+    collect: Option<CollectFn<'a>>,
     execution_mode: ExecutionMode,
     summary: McSummary,
     visited: VisitedStates,
+    collected: HashSet<McState>,
 }
 
-impl Dfs {
+impl<'a> Dfs<'a> {
     /// Creates a new Dfs instance with specified user-defined functions and execution mode.
-    pub fn new(prune: PruneFn, goal: GoalFn, invariant: InvariantFn, execution_mode: ExecutionMode) -> Self {
+    pub fn new(
+        prune: PruneFn<'a>,
+        goal: GoalFn<'a>,
+        invariant: InvariantFn<'a>,
+        collect: Option<CollectFn<'a>>,
+        execution_mode: ExecutionMode,
+    ) -> Self {
         let visited = Self::initialize_visited(&execution_mode);
         Self {
             prune,
             goal,
             invariant,
+            collect,
             execution_mode,
             summary: McSummary::default(),
             visited,
+            collected: HashSet::new(),
         }
     }
 }
 
-impl Dfs {
+impl<'a> Dfs<'a> {
     fn dfs(&mut self, system: &mut McSystem, state: McState) -> Result<(), String> {
         let available_events = system.available_events();
 
@@ -46,13 +63,19 @@ impl Dfs {
     }
 }
 
-impl Strategy for Dfs {
-    fn run(&mut self, system: &mut McSystem) -> Result<McSummary, String> {
+impl<'a> Strategy for Dfs<'a> {
+    fn run(&mut self, system: &mut McSystem) -> Result<McResult, String> {
+        if self.execution_mode != ExecutionMode::Debug {
+            t!(format!("RUNNING MODEL CHECKING THROUGH EVERY POSSIBLE EXECUTION PATH").yellow())
+        }
         let state = system.get_state();
 
         let res = self.dfs(system, state);
         match res {
-            Ok(()) => Ok(self.summary.clone()),
+            Ok(()) => Ok(McResult {
+                summary: self.summary.clone(),
+                collected: self.collected.clone(),
+            }),
             Err(err) => Err(err),
         }
     }
@@ -79,6 +102,14 @@ impl Strategy for Dfs {
 
     fn invariant(&self) -> &InvariantFn {
         &self.invariant
+    }
+
+    fn collect(&self) -> &Option<CollectFn> {
+        &self.collect
+    }
+
+    fn collected(&mut self) -> &mut HashSet<McState> {
+        &mut self.collected
     }
 
     fn summary(&mut self) -> &mut McSummary {

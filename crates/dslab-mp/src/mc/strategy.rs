@@ -3,12 +3,13 @@
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::hash::{Hash, Hasher};
+use std::ops::AddAssign;
 
 use colored::*;
 use lazy_static::lazy_static;
 use regex::Regex;
 
-use crate::mc::events::McEvent::{MessageDropped, MessageReceived, TimerCancelled, TimerFired};
+use crate::mc::events::McEvent::{LocalMessageReceived, MessageDropped, MessageReceived, TimerCancelled, TimerFired};
 use crate::mc::events::{DeliveryOptions, McEvent, McEventId};
 use crate::mc::system::{McState, McSystem};
 use crate::message::Message;
@@ -19,6 +20,9 @@ use crate::util::t;
 pub enum ExecutionMode {
     /// Default execution mode with reduced output intended for regular use.
     Default,
+
+    /// Collect statistics and states, but ignore debug output
+    Experiment,
 
     /// Execution with verbose output intended for debugging purposes.
     /// Runs slower than the default mode.
@@ -37,6 +41,7 @@ pub enum LogContext {
     Corrupted,
 }
 
+#[derive(Clone)]
 /// Alternative implementations of storing the previously visited system states
 /// and checking if the state was visited.
 pub enum VisitedStates {
@@ -54,22 +59,47 @@ pub struct McSummary {
     pub(crate) states: HashMap<String, u32>,
 }
 
+/// Model checking execution result.
+#[derive(Debug, Default, Clone)]
+pub struct McResult {
+    pub summary: McSummary,
+    pub collected: HashSet<McState>,
+}
+
+impl McResult {
+    pub fn new(summary: McSummary, collected: HashSet<McState>) -> Self {
+        McResult { summary, collected }
+    }
+
+    pub fn combine(&mut self, other: McResult) {
+        self.collected.extend(other.collected.into_iter());
+        for (state, cnt) in other.summary.states {
+            let entry = self.summary.states.entry(state).or_insert(0);
+            *entry += cnt;
+        }
+    }
+}
+
 /// Decides whether to prune the executions originating from the given state.
 /// Returns Some(status) if the executions should be pruned and None otherwise.
-pub type PruneFn = Box<dyn Fn(&McState) -> Option<String>>;
+pub type PruneFn<'a> = Box<dyn Fn(&McState) -> Option<String> + 'a>;
 
 /// Checks if the given state is the final state, i.e. all expected events have already occurred.
 /// Returns Some(status) if the final state is reached and None otherwise.
-pub type GoalFn = Box<dyn Fn(&McState) -> Option<String>>;
+pub type GoalFn<'a> = Box<dyn Fn(&McState) -> Option<String> + 'a>;
 
 /// Checks if some invariant holds in the given state.
 /// Returns Err(error) if the invariant is broken and Ok otherwise.
-pub type InvariantFn = Box<dyn Fn(&McState) -> Result<(), String>>;
+pub type InvariantFn<'a> = Box<dyn Fn(&McState) -> Result<(), String> + 'a>;
+
+/// Checks if given state should be collected.
+/// Returns Err(error) if the invariant is broken and Ok otherwise.
+pub type CollectFn<'a> = Box<dyn Fn(&McState) -> bool + 'a>;
 
 /// Trait with common functions for different model checking strategies.
 pub trait Strategy {
     /// Launches the strategy execution.
-    fn run(&mut self, system: &mut McSystem) -> Result<McSummary, String>;
+    fn run(&mut self, system: &mut McSystem) -> Result<McResult, String>;
 
     /// Callback which in called whenever a new system state is discovered.
     fn search_step_impl(&mut self, system: &mut McSystem, state: McState) -> Result<(), String>;
@@ -121,6 +151,7 @@ pub trait Strategy {
                 system.events.cancel_timer(proc, timer);
                 self.apply_event(system, event_id, false, false)?;
             }
+            // impossible to get local message or message drops from insiders
             _ => {}
         }
 
@@ -136,11 +167,13 @@ pub trait Strategy {
         src: String,
         dest: String,
     ) -> Result<(), String> {
+        let state = system.get_state();
         self.take_event(system, event_id);
 
         let drop_event_id = self.add_event(system, MessageDropped { msg, src, dest });
 
         self.apply_event(system, drop_event_id, false, false)?;
+        system.set_state(state);
 
         Ok(())
     }
@@ -237,6 +270,9 @@ pub trait Strategy {
                 MessageReceived { msg, src, dest, .. } => {
                     self.log_message(search_depth, msg, src, dest, log_context);
                 }
+                LocalMessageReceived { msg, dest, .. } => {
+                    t!(format!("{:>10} | {:>10} <-- LOCAL {:?}", search_depth, dest, msg).green());
+                }
                 TimerFired { proc, timer, .. } => {
                     t!(format!("{:>10} | {:>10} !-- {:<10} <-- timer fired", search_depth, proc, timer).yellow());
                 }
@@ -284,6 +320,7 @@ pub trait Strategy {
     {
         match log_mode {
             ExecutionMode::Debug => VisitedStates::Full(HashSet::default()),
+            ExecutionMode::Experiment => VisitedStates::Full(HashSet::default()),
             ExecutionMode::Default => VisitedStates::Partial(HashSet::default()),
         }
     }
@@ -315,10 +352,20 @@ pub trait Strategy {
     }
 
     /// Adds new information to model checking execution summary.
-    fn update_summary(&mut self, status: String) {
-        if let ExecutionMode::Debug = self.execution_mode() {
-            let counter = self.summary().states.entry(status).or_insert(0);
+    fn update_result(&mut self, status: String, state: &McState) {
+        let update = |strategy: &mut Self| {
+            let counter = strategy.summary().states.entry(status).or_insert(0);
             *counter += 1;
+        };
+        match &self.execution_mode() {
+            ExecutionMode::Debug => update(self),
+            ExecutionMode::Experiment => update(self),
+            ExecutionMode::Default => {}
+        }
+        if let Some(collect) = self.collect() {
+            if (*collect)(state) {
+                self.collected().insert(state.clone());
+            }
         }
     }
 
@@ -329,11 +376,11 @@ pub trait Strategy {
             Some(Err(err))
         } else if let Some(status) = (self.goal())(state) {
             // Reached final state of the system
-            self.update_summary(status);
+            self.update_result(status, state);
             Some(Ok(()))
         } else if let Some(status) = (self.prune())(state) {
             // Execution branch is pruned
-            self.update_summary(status);
+            self.update_result(status, state);
             Some(Ok(()))
         } else if state.events.available_events_num() == 0 {
             // exhausted without goal completed
@@ -349,6 +396,9 @@ pub trait Strategy {
     /// Returns the visited states set.
     fn visited(&mut self) -> &mut VisitedStates;
 
+    /// Returns the visited states set.
+    fn collected(&mut self) -> &mut HashSet<McState>;
+
     /// Returns the prune function.
     fn prune(&self) -> &PruneFn;
 
@@ -357,6 +407,9 @@ pub trait Strategy {
 
     /// Returns the invariant function.
     fn invariant(&self) -> &InvariantFn;
+
+    /// Returns the collect function.
+    fn collect(&self) -> &Option<CollectFn>;
 
     /// Returns the model checking execution summary.
     fn summary(&mut self) -> &mut McSummary;
