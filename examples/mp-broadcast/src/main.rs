@@ -2,15 +2,15 @@ use std::cmp::min;
 use std::collections::hash_map::DefaultHasher;
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::hash::{Hasher, Hash};
+use std::hash::{Hash, Hasher};
 use std::io::Write;
 
 use clap::Parser;
 use dslab_mp::mc::events::McEvent;
 use dslab_mp::mc::model_checker::ModelChecker;
-use dslab_mp::mc::strategy::{McSummary, VisitedStates, McResult};
-use dslab_mp::mc::system::McState;
 use dslab_mp::mc::strategies::dfs::Dfs;
+use dslab_mp::mc::strategy::{McResult, McSummary, VisitedStates};
+use dslab_mp::mc::system::McState;
 use env_logger::Builder;
 use log::LevelFilter;
 use rand::prelude::*;
@@ -312,7 +312,6 @@ fn mc_check_too_deep(state: &McState, depth: u64) -> Result<(), String> {
     }
 }
 
-
 fn mc_prune_proc_permutations(state: &McState) -> Option<String> {
     let mut proc_names = vec![];
     for event in &state.log {
@@ -354,13 +353,17 @@ fn mc_prune_messages(state: &McState, for_a_proc: usize, total: usize) -> Option
         }
     }
 
-    if state.log.iter().filter(|event| 
-        match *event {
+    if state
+        .log
+        .iter()
+        .filter(|event| match *event {
             McEvent::MessageReceived { .. } => true,
             McEvent::MessageDropped { .. } => true,
-            _ => false
-        }
-    ).count() > total {
+            _ => false,
+        })
+        .count()
+        > total
+    {
         return Some("too many messages in total".to_owned());
     }
     None
@@ -389,7 +392,10 @@ fn mc_invariant(state: &McState, config: &TestConfig, sent_messages: &HashSet<St
 fn mc_goal(state: &McState, config: &TestConfig, can_be_crashed: Option<u64>) -> Option<String> {
     let mut received_total = 1;
     for i in 0..config.proc_count {
-        let outbox = &state.node_states.get(&format!("node-{}", i)).and_then(|node| node.get(&format!("proc-{}", i)).and_then(|proc| Some(&proc.local_outbox)));
+        let outbox = &state.node_states.get(&format!("node-{}", i)).and_then(|node| {
+            node.get(&format!("proc-{}", i))
+                .and_then(|proc| Some(&proc.local_outbox))
+        });
         if let Some(outbox) = outbox {
             if let Some(id_crashed) = can_be_crashed {
                 if i == id_crashed {
@@ -419,11 +425,14 @@ fn mc_clear_state_history(state: &mut McState) {
 
 fn get_n_start_states(start_states: HashSet<McState>, mut n: usize) -> HashSet<McState> {
     n = min(n, start_states.len());
-    let mut hashed = start_states.into_iter().map(|state| {
-        let mut hasher = DefaultHasher::default();
-        state.hash(&mut hasher);
-        (hasher.finish(), state)
-    }).collect::<Vec<(u64, McState)>>();
+    let mut hashed = start_states
+        .into_iter()
+        .map(|state| {
+            let mut hasher = DefaultHasher::default();
+            state.hash(&mut hasher);
+            (hasher.finish(), state)
+        })
+        .collect::<Vec<(u64, McState)>>();
     hashed.sort_by_key(|(a, b)| *a);
     HashSet::from_iter(hashed.split_at(n).0.into_iter().map(|(a, b)| b.clone()))
 }
@@ -439,16 +448,11 @@ fn test_model_checking_normal_delivery(config: &TestConfig) -> TestResult {
         &sys,
         Box::new(Dfs::new(
             Box::new(|state| {
-                mc_prune_messages(state, 2, 6).or_else(||
-                mc_prune_proc_permutations(state).or_else(||
-                mc_check_too_deep(state, 10).err()))
+                mc_prune_messages(state, 2, 6)
+                    .or_else(|| mc_prune_proc_permutations(state).or_else(|| mc_check_too_deep(state, 10).err()))
             }),
-            Box::new(move |state| {
-                mc_goal(state, &config, None)
-            }),
-            Box::new(move |state| {
-                mc_invariant(state, &config, &test_sent_messages)
-            }),
+            Box::new(move |state| mc_goal(state, &config, None)),
+            Box::new(move |state| mc_invariant(state, &config, &test_sent_messages)),
             None,
             dslab_mp::mc::strategy::ExecutionMode::Debug,
         )),
@@ -475,15 +479,9 @@ fn test_model_checking_sender_crash(config: &TestConfig) -> TestResult {
     let mut mc = ModelChecker::new(
         &sys,
         Box::new(Dfs::new(
-            Box::new(|state| {
-                mc_check_too_deep(state, 4).err()
-            }),
-            Box::new(move |state| {
-                mc_goal(state, &config, None)
-            }),
-            Box::new(|state| {
-                mc_invariant(state, &config, &test_sent_messages)
-            }),
+            Box::new(|state| mc_check_too_deep(state, 4).err()),
+            Box::new(move |state| mc_goal(state, &config, None)),
+            Box::new(|state| mc_invariant(state, &config, &test_sent_messages)),
             Some(Box::new(move |state| {
                 for i in 1..3 {
                     let process_state = &state.node_states[&format!("node-{}", i)][&format!("proc-{}", i)];
@@ -506,19 +504,14 @@ fn test_model_checking_sender_crash(config: &TestConfig) -> TestResult {
         &sys,
         Box::new(Dfs::new(
             Box::new(|state| {
-                mc_prune_messages(state, 4, 8).or_else(||
-                mc_prune_proc_permutations(state).or_else(||
-                mc_check_too_deep(state, 6).err()))
+                mc_prune_messages(state, 4, 8)
+                    .or_else(|| mc_prune_proc_permutations(state).or_else(|| mc_check_too_deep(state, 6).err()))
             }),
-            Box::new(move |state| {
-                mc_goal(state, &config, Some(0))
-            }),
-            Box::new(|state| {
-                mc_invariant(state, &config, &test_sent_messages)
-            }),
+            Box::new(move |state| mc_goal(state, &config, Some(0))),
+            Box::new(|state| mc_invariant(state, &config, &test_sent_messages)),
             None,
             dslab_mp::mc::strategy::ExecutionMode::Debug,
-        ))
+        )),
     );
     if res.collected.is_empty() {
         return Err(format!("can't move to second stage"));
@@ -531,7 +524,10 @@ fn test_model_checking_sender_crash(config: &TestConfig) -> TestResult {
         let cur_res = mc.run();
         mc.set_state(state);
         if cur_res.is_err() {
-            return Err(format!("model checher found error: {}", cur_res.as_ref().err().unwrap()));
+            return Err(format!(
+                "model checher found error: {}",
+                cur_res.as_ref().err().unwrap()
+            ));
         }
         res.combine(cur_res.unwrap());
     }
@@ -681,8 +677,16 @@ fn main() {
     };
     tests.add("CHAOS MONKEY", test_chaos_monkey, config);
     tests.add("SCALABILITY", test_scalability, config);
-    tests.add("MODEL CHECKING NORMAL DELIVERY", test_model_checking_normal_delivery, config_mc);
-    tests.add("MODEL CHECKING SENDER CRASH", test_model_checking_sender_crash, config_mc);
+    tests.add(
+        "MODEL CHECKING NORMAL DELIVERY",
+        test_model_checking_normal_delivery,
+        config_mc,
+    );
+    tests.add(
+        "MODEL CHECKING SENDER CRASH",
+        test_model_checking_sender_crash,
+        config_mc,
+    );
 
     if args.test.is_none() {
         tests.run();
