@@ -344,9 +344,13 @@ fn mc_goal<'a>() -> Box<dyn Fn(&McState) -> Option<String> + 'a> {
             None
         }
     })
-} 
+}
 
-fn mc_check_received_messages(state: &McState, messages_expected: &Vec<Message>, config: &TestConfig) -> Result<(), String> {
+fn mc_check_received_messages(
+    state: &McState,
+    messages_expected: &Vec<Message>,
+    config: &TestConfig,
+) -> Result<(), String> {
     let mut msg_count = HashMap::new();
     let mut expected_msg_count = HashMap::new();
     for msg in messages_expected {
@@ -416,13 +420,17 @@ fn mc_check_too_deep(state: &McState, depth: u64) -> Result<(), String> {
 }
 
 fn mc_prune_number_of_timers(state: &McState, timers_allowed: u64) -> Option<String> {
-    let timers = state.log.iter().filter(|event| 
-        if let McEvent::TimerFired{..} = **event {
-            true
-        } else {
-            false
-        }
-    ).count();
+    let timers = state
+        .log
+        .iter()
+        .filter(|event| {
+            if let McEvent::TimerFired { .. } = **event {
+                true
+            } else {
+                false
+            }
+        })
+        .count();
     if timers > timers_allowed as usize {
         Some("too many fired timers".to_owned())
     } else {
@@ -430,15 +438,18 @@ fn mc_prune_number_of_timers(state: &McState, timers_allowed: u64) -> Option<Str
     }
 }
 
-
 fn mc_prune_number_of_drops(state: &McState, drops_allowed: u64) -> Option<String> {
-    let drops = state.log.iter().filter(|event| 
-        if let McEvent::MessageDropped{..} = **event {
-            true
-        } else {
-            false
-        }
-    ).count();
+    let drops = state
+        .log
+        .iter()
+        .filter(|event| {
+            if let McEvent::MessageDropped { .. } = **event {
+                true
+            } else {
+                false
+            }
+        })
+        .count();
     if drops > drops_allowed as usize {
         Some("too many dropped messages".to_owned())
     } else {
@@ -471,11 +482,7 @@ fn test_model_checking_reliable_network(config: &TestConfig) -> TestResult {
     let mut mc = ModelChecker::new(
         &sys,
         Box::new(Dfs::new(
-            Box::new(|state| {
-                mc_prune_many_messages_sent(state, 4).or_else(||
-                mc_prune_number_of_timers(state, 4)
-                )
-            }),
+            Box::new(|state| mc_prune_many_messages_sent(state, 4).or_else(|| mc_prune_number_of_timers(state, 4))),
             mc_goal(),
             Box::new(move |state| {
                 mc_check_too_deep(state, 20)?;
@@ -494,7 +501,6 @@ fn test_model_checking_reliable_network(config: &TestConfig) -> TestResult {
     Ok(true)
 }
 
-
 fn test_model_checking_unreliable_network(config: &TestConfig) -> TestResult {
     let mut sys = build_system(config, false);
     sys.network().set_drop_rate(0.1);
@@ -511,13 +517,9 @@ fn test_model_checking_unreliable_network(config: &TestConfig) -> TestResult {
     let mut mc = ModelChecker::new(
         &sys,
         Box::new(Dfs::new(
-            Box::new(|state| {
-                mc_check_too_deep(state, 5).err()
-            }),
+            Box::new(|state| mc_check_too_deep(state, 5).err()),
             mc_goal(),
-            Box::new(move |state| {
-                mc_check_received_messages(state, &messages, &config)
-            }),
+            Box::new(move |state| mc_check_received_messages(state, &messages, &config)),
             None,
             dslab_mp::mc::strategy::ExecutionMode::Debug,
         )),
@@ -549,15 +551,13 @@ fn test_model_checking_limit_drop_number(config: &TestConfig) -> TestResult {
         Box::new(Dfs::new(
             Box::new(|state| {
                 let num_drops_allowed: u64 = 3;
-                mc_prune_number_of_drops(state, num_drops_allowed).or_else(||
-                mc_prune_many_messages_sent(state, 2 + num_drops_allowed).or_else(||
-                mc_prune_number_of_timers(state, 4)
-                ))
+                mc_prune_number_of_drops(state, num_drops_allowed).or_else(|| {
+                    mc_prune_many_messages_sent(state, 2 + num_drops_allowed)
+                        .or_else(|| mc_prune_number_of_timers(state, 4))
+                })
             }),
             mc_goal(),
-            Box::new(move |state| {
-                mc_check_received_messages(state, &messages, &config)
-            }),
+            Box::new(move |state| mc_check_received_messages(state, &messages, &config)),
             None,
             dslab_mp::mc::strategy::ExecutionMode::Debug,
         )),
@@ -679,9 +679,21 @@ fn main() {
         if args.monkeys > 0 {
             tests.add("[AT MOST ONCE] CHAOS MONKEY", test_chaos_monkey, config);
         }
-        tests.add("[AT MOST ONCE] MODEL CHECKING", test_model_checking_reliable_network, config);
-        tests.add("[AT MOST ONCE] MODEL CHECKING UNRELIABLE", test_model_checking_unreliable_network, config);
-        tests.add("[AT MOST ONCE] MODEL CHECKING HALF-RELIABLE", test_model_checking_limit_drop_number, config);
+        tests.add(
+            "[AT MOST ONCE] MODEL CHECKING",
+            test_model_checking_reliable_network,
+            config,
+        );
+        tests.add(
+            "[AT MOST ONCE] MODEL CHECKING UNRELIABLE",
+            test_model_checking_unreliable_network,
+            config,
+        );
+        tests.add(
+            "[AT MOST ONCE] MODEL CHECKING HALF-RELIABLE",
+            test_model_checking_limit_drop_number,
+            config,
+        );
         if args.overhead {
             config.reliable = true;
             tests.add(
@@ -710,9 +722,21 @@ fn main() {
         tests.add("[AT LEAST ONCE] DUPLICATED", test_duplicated, config);
         tests.add("[AT LEAST ONCE] DELAYED+DUPLICATED", test_delayed_duplicated, config);
         tests.add("[AT LEAST ONCE] DROPPED", test_dropped, config);
-        tests.add("[AT LEAST ONCE] MODEL CHECKING", test_model_checking_reliable_network, config);
-        tests.add("[AT LEAST ONCE] MODEL CHECKING UNRELIABLE", test_model_checking_unreliable_network, config);
-        tests.add("[AT LEAST ONCE] MODEL CHECKING HALF-RELIABLE", test_model_checking_limit_drop_number, config);
+        tests.add(
+            "[AT LEAST ONCE] MODEL CHECKING",
+            test_model_checking_reliable_network,
+            config,
+        );
+        tests.add(
+            "[AT LEAST ONCE] MODEL CHECKING UNRELIABLE",
+            test_model_checking_unreliable_network,
+            config,
+        );
+        tests.add(
+            "[AT LEAST ONCE] MODEL CHECKING HALF-RELIABLE",
+            test_model_checking_limit_drop_number,
+            config,
+        );
         if args.monkeys > 0 {
             tests.add("[AT LEAST ONCE] CHAOS MONKEY", test_chaos_monkey, config);
         }
@@ -742,9 +766,21 @@ fn main() {
         tests.add("[EXACTLY ONCE] DUPLICATED", test_duplicated, config);
         tests.add("[EXACTLY ONCE] DELAYED+DUPLICATED", test_delayed_duplicated, config);
         tests.add("[EXACTLY ONCE] DROPPED", test_dropped, config);
-        tests.add("[EXACTLY ONCE] MODEL CHECKING", test_model_checking_reliable_network, config);
-        tests.add("[EXACTLY ONCE] MODEL CHECKING UNRELIABLE", test_model_checking_unreliable_network, config);
-        tests.add("[EXACTLY ONCE] MODEL CHECKING HALF-RELIABLE", test_model_checking_limit_drop_number, config);
+        tests.add(
+            "[EXACTLY ONCE] MODEL CHECKING",
+            test_model_checking_reliable_network,
+            config,
+        );
+        tests.add(
+            "[EXACTLY ONCE] MODEL CHECKING UNRELIABLE",
+            test_model_checking_unreliable_network,
+            config,
+        );
+        tests.add(
+            "[EXACTLY ONCE] MODEL CHECKING HALF-RELIABLE",
+            test_model_checking_limit_drop_number,
+            config,
+        );
         if args.monkeys > 0 {
             tests.add("[EXACTLY ONCE] CHAOS MONKEY", test_chaos_monkey, config);
         }
@@ -783,9 +819,21 @@ fn main() {
             config,
         );
         tests.add("[EXACTLY ONCE ORDERED] DROPPED", test_dropped, config);
-        tests.add("[EXACTLY ONCE ORDERED] MODEL CHECKING", test_model_checking_reliable_network, config);
-        tests.add("[EXACTLY ONCE ORDERED] MODEL CHECKING UNRELIABLE", test_model_checking_unreliable_network, config);
-        tests.add("[EXACTLY ONCE ORDERED] MODEL CHECKING HALF-RELIABLE", test_model_checking_limit_drop_number, config);
+        tests.add(
+            "[EXACTLY ONCE ORDERED] MODEL CHECKING",
+            test_model_checking_reliable_network,
+            config,
+        );
+        tests.add(
+            "[EXACTLY ONCE ORDERED] MODEL CHECKING UNRELIABLE",
+            test_model_checking_unreliable_network,
+            config,
+        );
+        tests.add(
+            "[EXACTLY ONCE ORDERED] MODEL CHECKING HALF-RELIABLE",
+            test_model_checking_limit_drop_number,
+            config,
+        );
         if args.monkeys > 0 {
             tests.add("[EXACTLY ONCE ORDERED] CHAOS MONKEY", test_chaos_monkey, config);
         }
